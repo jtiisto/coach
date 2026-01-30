@@ -3,7 +3,7 @@
 import json
 import pytest
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 @pytest.mark.integration
@@ -252,7 +252,7 @@ class TestGetWorkoutLogs:
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
         # Insert log directly
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         db_manager.execute_write(
             "INSERT INTO workout_logs (date, log_json, last_modified) VALUES (?, ?, ?)",
             ["2026-02-02", json.dumps(sample_log), now]
@@ -292,7 +292,7 @@ class TestGetWorkoutSummary:
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
         today = datetime.now().strftime("%Y-%m-%d")
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         # Insert plan and log
         db_manager.execute_write(

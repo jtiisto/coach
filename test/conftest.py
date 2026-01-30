@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -145,7 +145,7 @@ def seeded_database(client, registered_client, sample_plan, sample_log, temp_db_
     cursor = conn.cursor()
 
     # Insert plans
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     cursor.execute(
         "INSERT INTO workout_plans (date, plan_json, last_modified, last_modified_by) VALUES (?, ?, ?, ?)",
         (today, json.dumps(sample_plan), now, "test")

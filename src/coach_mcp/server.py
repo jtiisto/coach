@@ -7,7 +7,7 @@ through the Model Context Protocol for LLM workout planning and analysis.
 import json
 import os
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -86,7 +86,7 @@ class DatabaseManager:
 
 def get_utc_now() -> str:
     """Return current UTC time as ISO-8601 string."""
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:

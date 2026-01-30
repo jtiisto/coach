@@ -5,12 +5,13 @@ Workout plan management and log synchronization
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import contextmanager, asynccontextmanager
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
@@ -55,6 +56,15 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Coach Exercise Tracker Server", lifespan=lifespan)
+
+# CORS middleware - allow all origins for development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Database helpers
@@ -118,7 +128,7 @@ def init_database():
 
 def get_utc_now() -> str:
     """Return current UTC time as ISO-8601 string."""
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # Pydantic models
@@ -285,7 +295,10 @@ def serve_exercise_app():
     html = html.replace('href="/styles.css"', f'href="/styles.css?v={SERVER_VERSION}"')
     html = html.replace('src="/js/app.js"', f'src="/js/app.js?v={SERVER_VERSION}"')
 
-    return HTMLResponse(content=html)
+    return HTMLResponse(
+        content=html,
+        headers={"Cache-Control": "no-cache, must-revalidate"}
+    )
 
 
 @app.get("/styles.css")
