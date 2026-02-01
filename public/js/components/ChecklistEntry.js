@@ -8,8 +8,9 @@ import { updateLog } from '../store.js';
 
 const html = htm.bind(h);
 
-export function ChecklistEntry({ date, exerciseId, items, completedItems }) {
+export function ChecklistEntry({ date, exerciseId, items, completedItems, isEditable = true }) {
     const handleItemToggle = (item) => {
+        if (!isEditable) return;
         let newCompleted;
         if (completedItems.includes(item)) {
             newCompleted = completedItems.filter(i => i !== item);
@@ -30,6 +31,7 @@ export function ChecklistEntry({ date, exerciseId, items, completedItems }) {
                             id=${`${exerciseId}-${item}`}
                             checked=${isChecked}
                             onChange=${() => handleItemToggle(item)}
+                            disabled=${!isEditable}
                         />
                         <label for=${`${exerciseId}-${item}`}>${item}</label>
                     </div>

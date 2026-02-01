@@ -8,8 +8,9 @@ import { updateLog } from '../store.js';
 
 const html = htm.bind(h);
 
-export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false }) {
+export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false, isEditable = true }) {
     const handleSetChange = (setIndex, field, value) => {
+        if (!isEditable) return;
         const updatedSets = [...sets];
 
         // Ensure set exists
@@ -41,11 +42,12 @@ export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false 
                     <input
                         type="number"
                         class="set-input weight"
-                        placeholder="kg"
+                        placeholder="lbs"
                         value=${data.weight ?? ''}
                         onInput=${(e) => handleSetChange(index, 'weight', e.target.value ? Number(e.target.value) : null)}
+                        disabled=${!isEditable}
                     />
-                    <span class="set-label">kg</span>
+                    <span class="set-label">lbs</span>
 
                     ${showTime ? html`
                         <input
@@ -54,6 +56,7 @@ export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false 
                             placeholder="sec"
                             value=${data.duration_sec ?? ''}
                             onInput=${(e) => handleSetChange(index, 'duration_sec', e.target.value ? Number(e.target.value) : null)}
+                            disabled=${!isEditable}
                         />
                         <span class="set-label">sec</span>
                     ` : html`
@@ -63,6 +66,7 @@ export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false 
                             placeholder="reps"
                             value=${data.reps ?? ''}
                             onInput=${(e) => handleSetChange(index, 'reps', e.target.value ? Number(e.target.value) : null)}
+                            disabled=${!isEditable}
                         />
                         <span class="set-label">reps</span>
 
@@ -75,6 +79,7 @@ export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false 
                             step="0.5"
                             value=${data.rpe ?? ''}
                             onInput=${(e) => handleSetChange(index, 'rpe', e.target.value ? Number(e.target.value) : null)}
+                            disabled=${!isEditable}
                         />
                         <span class="set-label">RPE</span>
                     `}
@@ -84,6 +89,7 @@ export function SetEntry({ date, exerciseId, targetSets, sets, showTime = false 
                             type="checkbox"
                             checked=${!!data.completed}
                             onChange=${(e) => handleSetChange(index, 'completed', e.target.checked)}
+                            disabled=${!isEditable}
                         />
                     </div>
                 </div>

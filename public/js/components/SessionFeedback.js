@@ -8,8 +8,9 @@ import { updateSessionFeedback } from '../store.js';
 
 const html = htm.bind(h);
 
-export function SessionFeedback({ date, feedback }) {
+export function SessionFeedback({ date, feedback, isEditable = true }) {
     const handleChange = (field, value) => {
+        if (!isEditable) return;
         updateSessionFeedback(date, { [field]: value });
     };
 
@@ -21,9 +22,10 @@ export function SessionFeedback({ date, feedback }) {
                 <label class="feedback-label">Pain / Discomfort (especially right knee)</label>
                 <textarea
                     class="feedback-textarea"
-                    placeholder="Note any pain, discomfort, or issues..."
+                    placeholder=${isEditable ? "Note any pain, discomfort, or issues..." : "No notes recorded"}
                     value=${feedback.pain_discomfort || ''}
                     onInput=${(e) => handleChange('pain_discomfort', e.target.value)}
+                    disabled=${!isEditable}
                 />
             </div>
 
@@ -31,9 +33,10 @@ export function SessionFeedback({ date, feedback }) {
                 <label class="feedback-label">General Notes</label>
                 <textarea
                     class="feedback-textarea"
-                    placeholder="How did the session feel overall?"
+                    placeholder=${isEditable ? "How did the session feel overall?" : "No notes recorded"}
                     value=${feedback.general_notes || ''}
                     onInput=${(e) => handleChange('general_notes', e.target.value)}
+                    disabled=${!isEditable}
                 />
             </div>
         </div>

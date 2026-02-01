@@ -13,17 +13,19 @@ import { ChecklistEntry } from './ChecklistEntry.js';
 
 const html = htm.bind(h);
 
-export function ExerciseItem({ date, exercise, logData }) {
+export function ExerciseItem({ date, exercise, logData, isEditable = true }) {
     const [expanded, setExpanded] = useState(false);
 
     const completed = isExerciseCompleted(exercise, logData);
     const target = formatTarget(exercise);
 
     const handleCompletedChange = (e) => {
+        if (!isEditable) return;
         updateLog(date, exercise.id, { completed: e.target.checked });
     };
 
     const handleNoteChange = (e) => {
+        if (!isEditable) return;
         updateLog(date, exercise.id, { user_note: e.target.value });
     };
 
@@ -36,6 +38,7 @@ export function ExerciseItem({ date, exercise, logData }) {
                         exerciseId=${exercise.id}
                         items=${exercise.items || []}
                         completedItems=${logData?.completed_items || []}
+                        isEditable=${isEditable}
                     />
                 `;
             case 'strength':
@@ -45,6 +48,7 @@ export function ExerciseItem({ date, exercise, logData }) {
                         exerciseId=${exercise.id}
                         targetSets=${exercise.target_sets || 3}
                         sets=${logData?.sets || []}
+                        isEditable=${isEditable}
                     />
                 `;
             case 'duration':
@@ -54,6 +58,7 @@ export function ExerciseItem({ date, exercise, logData }) {
                         exerciseId=${exercise.id}
                         targetMin=${exercise.target_duration_min}
                         data=${logData || {}}
+                        isEditable=${isEditable}
                     />
                 `;
             case 'weighted_time':
@@ -64,6 +69,7 @@ export function ExerciseItem({ date, exercise, logData }) {
                         targetSets=${exercise.target_sets || 1}
                         sets=${logData?.sets || []}
                         showTime=${true}
+                        isEditable=${isEditable}
                     />
                 `;
             default:
@@ -79,6 +85,7 @@ export function ExerciseItem({ date, exercise, logData }) {
                         type="checkbox"
                         checked=${completed}
                         onChange=${handleCompletedChange}
+                        disabled=${!isEditable}
                     />
                 </div>
                 <span class="exercise-name">${exercise.name}</span>
@@ -96,9 +103,10 @@ export function ExerciseItem({ date, exercise, logData }) {
 
                     <div class="user-note">
                         <textarea
-                            placeholder="Add notes..."
+                            placeholder=${isEditable ? "Add notes..." : "No notes"}
                             value=${logData?.user_note || ''}
                             onInput=${handleNoteChange}
+                            disabled=${!isEditable}
                         />
                     </div>
                 </div>

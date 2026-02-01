@@ -454,19 +454,19 @@ def seed_test_data():
         },
         "ex_1": {
             "completed": True,
-            "user_note": "Used 24kg KB, felt solid",
+            "user_note": "Used 53lb KB, felt solid",
             "sets": [
-                {"set_num": 1, "weight": 24, "reps": 10, "rpe": 6, "unit": "kg"},
-                {"set_num": 2, "weight": 24, "reps": 10, "rpe": 7, "unit": "kg"},
-                {"set_num": 3, "weight": 24, "reps": 10, "rpe": 7.5, "unit": "kg"}
+                {"set_num": 1, "weight": 53, "reps": 10, "rpe": 6, "unit": "lbs"},
+                {"set_num": 2, "weight": 53, "reps": 10, "rpe": 7, "unit": "lbs"},
+                {"set_num": 3, "weight": 53, "reps": 10, "rpe": 7.5, "unit": "lbs"}
             ]
         },
         "ex_2": {
             "completed": True,
             "sets": [
-                {"set_num": 1, "weight": 20, "reps": 10, "rpe": 6, "unit": "kg"},
-                {"set_num": 2, "weight": 20, "reps": 10, "rpe": 7, "unit": "kg"},
-                {"set_num": 3, "weight": 20, "reps": 10, "rpe": 7, "unit": "kg"}
+                {"set_num": 1, "weight": 45, "reps": 10, "rpe": 6, "unit": "lbs"},
+                {"set_num": 2, "weight": 45, "reps": 10, "rpe": 7, "unit": "lbs"},
+                {"set_num": 3, "weight": 45, "reps": 10, "rpe": 7, "unit": "lbs"}
             ]
         },
         "cardio_1": {

@@ -13,9 +13,10 @@ import {
     workoutLogs,
     initializeStore
 } from './store.js';
+import { getToday } from './utils.js';
 
 import { Header } from './components/Header.js';
-import { DateSelector } from './components/DateSelector.js';
+import { CalendarPicker } from './components/CalendarPicker.js';
 import { WorkoutView } from './components/WorkoutView.js';
 import { Notifications } from './components/Notifications.js';
 
@@ -45,11 +46,12 @@ function App() {
 
     const currentPlan = plans[date] || null;
     const currentLog = logs[date] || null;
+    const isEditable = date === getToday();
 
     return html`
         <div class="app">
             <${Header} />
-            <${DateSelector} plans=${plans} logs=${logs} />
+            <${CalendarPicker} plans=${plans} logs=${logs} />
             <main class="main-content">
                 ${loading ? html`
                     <div class="loading">
@@ -61,6 +63,7 @@ function App() {
                         date=${date}
                         plan=${currentPlan}
                         log=${currentLog}
+                        isEditable=${isEditable}
                     />
                 `}
             </main>
