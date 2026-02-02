@@ -20,15 +20,32 @@ def transform_block_to_exercises(block: dict, block_index: int) -> list:
     rest_guidance = block.get("rest_guidance", "")
     duration = block.get("duration_min", 0)
 
-    # Handle blocks with exercises list
-    if "exercises" in block:
+    # Handle warmup blocks specially - aggregate into single checklist
+    if block_type == "warmup" and "exercises" in block:
+        items = []
+        for ex in block["exercises"]:
+            name = ex.get("name", "Unknown")
+            reps = ex.get("reps", "")
+            if reps:
+                items.append(f"{name} x{reps}" if isinstance(reps, int) else f"{name} {reps}")
+            else:
+                items.append(name)
+
+        exercise = {
+            "id": f"warmup_{block_index}",
+            "name": title or "Warmup",
+            "type": "checklist",
+            "items": items
+        }
+        exercises.append(exercise)
+
+    # Handle blocks with exercises list (non-warmup)
+    elif "exercises" in block:
         for i, ex in enumerate(block["exercises"]):
             exercise_id = f"{block_type}_{block_index}_{i+1}"
 
             # Determine exercise type based on block type and exercise content
-            if block_type == "warmup":
-                ex_type = "checklist"
-            elif block_type in ["circuit", "power"]:
+            if block_type in ["circuit", "power"]:
                 ex_type = "circuit"
             elif block_type == "strength":
                 ex_type = "strength"
