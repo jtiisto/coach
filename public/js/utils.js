@@ -108,6 +108,7 @@ export function isFuture(dateStr) {
 export function formatTarget(exercise) {
     switch (exercise.type) {
         case 'strength':
+        case 'circuit':
             return `${exercise.target_sets} x ${exercise.target_reps}`;
         case 'duration':
             return `${exercise.target_duration_min} min`;

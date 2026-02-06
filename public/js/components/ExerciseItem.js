@@ -42,6 +42,7 @@ export function ExerciseItem({ date, exercise, logData, isEditable = true }) {
                     />
                 `;
             case 'strength':
+            case 'circuit':
                 return html`
                     <${SetEntry}
                         date=${date}
