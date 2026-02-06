@@ -119,6 +119,9 @@ done
 # Copy requirements.txt
 copy_file "$PROJECT_ROOT/requirements.txt" "$PROD_DIR/requirements.txt" "requirements.txt"
 
+# Copy LLM exercise plan format (needed for plan generation in production)
+copy_file "$PROJECT_ROOT/exercise_plan_format.md" "$PROD_DIR/exercise_plan_format.md" "exercise_plan_format.md"
+
 # Create a minimal production requirements file (without test dependencies)
 echo "  Creating production requirements..."
 grep -v -E '^(pytest|httpx|pytest-cov|pytest-asyncio)' "$PROJECT_ROOT/requirements.txt" > "$PROD_DIR/requirements-prod.txt" 2>/dev/null || true

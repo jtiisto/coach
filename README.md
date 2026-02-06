@@ -211,7 +211,7 @@ ingest_training_program({
 
 ### LLM Plan Generation Format
 
-For detailed documentation on the block-based JSON format that LLMs should use when generating workout plans, see [llm_exercise_plan_format.md](llm_exercise_plan_format.md). This format is automatically transformed by `ingest_training_program` when `transform_blocks=True`.
+For detailed documentation on the block-based JSON format that LLMs should use when generating workout plans, see [exercise_plan_format.md](exercise_plan_format.md). This format is automatically transformed by `ingest_training_program` when `transform_blocks=True`.
 
 ## Exercise Types
 
@@ -279,7 +279,7 @@ coach/
 │   ├── deploy-prod.sh      # Production deployment
 │   └── ingest_plans.py     # Bulk ingestion CLI tool
 ├── test/                   # Test suite
-├── llm_exercise_plan_format.md  # LLM plan generation guide
+├── exercise_plan_format.md      # LLM plan generation guide
 └── requirements.txt
 ```
 
