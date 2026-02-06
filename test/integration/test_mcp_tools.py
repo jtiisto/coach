@@ -181,15 +181,15 @@ class TestSetWorkoutPlan:
         assert result["plan"]["day_name"] == "Updated Workout"
 
     def test_plan_validation_missing_exercises(self, mcp_config):
-        """Should reject plan without exercises."""
+        """Should reject plan without exercises or blocks."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        invalid_plan = {"day_name": "Test"}  # Missing exercises
+        invalid_plan = {"day_name": "Test"}  # Missing exercises and blocks
 
-        with pytest.raises(ValueError, match="missing required field"):
+        with pytest.raises(ValueError, match="must have either 'exercises' or 'blocks'"):
             tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
 
     def test_plan_validation_invalid_date(self, mcp_config, sample_plan):
@@ -285,6 +285,144 @@ class TestSetWorkoutPlan:
         }
 
         with pytest.raises(ValueError, match="missing 'type' field"):
+            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+
+    def test_create_plan_with_blocks(self, mcp_config):
+        """Should transform blocks into exercises and store both."""
+        from coach_mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(mcp_config)
+        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
+
+        block_plan = {
+            "day_name": "Upper Body Strength",
+            "location": "Gym",
+            "phase": "Building",
+            "blocks": [
+                {
+                    "block_type": "warmup",
+                    "title": "Warmup",
+                    "exercises": [
+                        {"name": "Arm Circles", "reps": 10},
+                        {"name": "Band Pull-Aparts", "reps": 15}
+                    ]
+                },
+                {
+                    "block_type": "strength",
+                    "title": "Main Lifts",
+                    "rest_guidance": "Rest 2-3 min",
+                    "exercises": [
+                        {"name": "Bench Press", "sets": 4, "reps": "6-8"},
+                        {"name": "Barbell Row", "sets": 4, "reps": "6-8"}
+                    ]
+                },
+                {
+                    "block_type": "cardio",
+                    "title": "Zone 2 Cooldown",
+                    "duration_min": 10,
+                    "instructions": ["Easy pace on bike for 10 minutes"]
+                }
+            ]
+        }
+
+        result = tools["set_workout_plan"].fn(date="2026-02-10", plan=block_plan)
+
+        assert result["success"] is True
+        saved_plan = result["plan"]
+        # Exercises list should be generated from blocks
+        assert "exercises" in saved_plan
+        assert len(saved_plan["exercises"]) > 0
+        # Blocks should be preserved (transformed)
+        assert "blocks" in saved_plan
+        assert len(saved_plan["blocks"]) == 3
+        # Verify exercises have required fields
+        for ex in saved_plan["exercises"]:
+            assert "id" in ex
+            assert "name" in ex
+            assert "type" in ex
+
+        # Verify we can retrieve the stored plan
+        get_result = tools["get_workout_plan"].fn(
+            start_date="2026-02-10", end_date="2026-02-10"
+        )
+        assert len(get_result) == 1
+
+    def test_create_plan_with_blocks_and_exercises(self, mcp_config):
+        """Should store as-is when both blocks and exercises are provided."""
+        from coach_mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(mcp_config)
+        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
+
+        plan = {
+            "day_name": "Pre-built Plan",
+            "blocks": [
+                {
+                    "block_index": 0,
+                    "block_type": "strength",
+                    "title": "Main Lifts",
+                    "exercises": [
+                        {"id": "strength_0_1", "name": "Squat", "type": "strength",
+                         "target_sets": 3, "target_reps": "8"}
+                    ]
+                }
+            ],
+            "exercises": [
+                {"id": "strength_0_1", "name": "Squat", "type": "strength",
+                 "target_sets": 3, "target_reps": "8"}
+            ]
+        }
+
+        result = tools["set_workout_plan"].fn(date="2026-02-11", plan=plan)
+
+        assert result["success"] is True
+        saved_plan = result["plan"]
+        # Should be stored as-is, no transform
+        assert saved_plan["exercises"] == plan["exercises"]
+        assert saved_plan["blocks"] == plan["blocks"]
+
+    def test_plan_validation_no_exercises_no_blocks(self, mcp_config):
+        """Should reject plan with neither exercises nor blocks."""
+        from coach_mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(mcp_config)
+        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
+
+        invalid_plan = {"day_name": "Test", "location": "Gym"}
+
+        with pytest.raises(ValueError, match="must have either 'exercises' or 'blocks'"):
+            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+
+    def test_plan_validation_blocks_not_a_list(self, mcp_config):
+        """Should reject plan where blocks is not a list."""
+        from coach_mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(mcp_config)
+        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
+
+        invalid_plan = {
+            "day_name": "Test",
+            "blocks": "not a list"
+        }
+
+        with pytest.raises(ValueError, match="blocks must be a list"):
+            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+
+    def test_plan_validation_block_missing_type(self, mcp_config):
+        """Should reject block without block_type."""
+        from coach_mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(mcp_config)
+        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
+
+        invalid_plan = {
+            "day_name": "Test",
+            "blocks": [
+                {"title": "Warmup", "exercises": [{"name": "Stretch"}]}
+            ]
+        }
+
+        with pytest.raises(ValueError, match="missing 'block_type' field"):
             tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
 
 

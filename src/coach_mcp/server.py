@@ -199,11 +199,16 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
         - Update existing plans
         - Build out a multi-week training program
 
-        The plan should follow the structured format with exercises defined.
+        The plan should follow the structured format with either a flat exercises
+        list or block-based groupings (warmup/strength/cardio etc.). When blocks
+        are provided without exercises, the exercises list is generated
+        automatically via the block transform pipeline.
 
         Args:
             date: Target date (YYYY-MM-DD)
-            plan: Plan object with the following structure:
+            plan: Plan object with **either** ``exercises`` or ``blocks`` (or both).
+
+                Flat format:
                 {
                     "day_name": "Lower Body + Bike",
                     "location": "Home" or "Gym",
@@ -222,10 +227,42 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
                     ]
                 }
 
+                Block format:
+                {
+                    "day_name": "Upper Body Strength",
+                    "location": "Gym",
+                    "phase": "Building",
+                    "blocks": [
+                        {
+                            "block_type": "warmup",
+                            "title": "Warmup",
+                            "exercises": [
+                                {"name": "Arm Circles", "reps": 10},
+                                {"name": "Band Pull-Aparts", "reps": 15}
+                            ]
+                        },
+                        {
+                            "block_type": "strength",
+                            "title": "Main Lifts",
+                            "rest_guidance": "Rest 2-3 min",
+                            "exercises": [
+                                {"name": "Bench Press", "sets": 4, "reps": "6-8"}
+                            ]
+                        },
+                        {
+                            "block_type": "cardio",
+                            "title": "Zone 2 Cooldown",
+                            "duration_min": 10,
+                            "instructions": ["Easy pace on bike"]
+                        }
+                    ]
+                }
+
         Returns:
             Success confirmation with the saved plan
 
-        Example:
+        Examples:
+            Flat format:
             set_workout_plan("2026-02-02", {
                 "day_name": "Lower Body + Bike",
                 "location": "Home",
@@ -235,6 +272,19 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
                      "items": ["Cat-Cow x10", "Bird-Dog x5/side", "Dead Bug x10"]},
                     {"id": "ex_1", "name": "KB Goblet Squat", "type": "strength",
                      "target_sets": 3, "target_reps": "10", "guidance_note": "Tempo 3-1-1"}
+                ]
+            })
+
+            Block format:
+            set_workout_plan("2026-02-02", {
+                "day_name": "Upper Body Strength",
+                "location": "Gym",
+                "phase": "Building",
+                "blocks": [
+                    {"block_type": "warmup", "title": "Warmup",
+                     "exercises": [{"name": "Arm Circles", "reps": 10}]},
+                    {"block_type": "strength", "title": "Main Lifts",
+                     "exercises": [{"name": "Bench Press", "sets": 4, "reps": "6-8"}]}
                 ]
             })
         """
@@ -248,10 +298,28 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
         if not isinstance(plan, dict):
             raise ValueError("Plan must be a dictionary")
 
-        required_fields = ["day_name", "exercises"]
-        for field in required_fields:
-            if field not in plan:
-                raise ValueError(f"Plan missing required field: {field}")
+        if "day_name" not in plan:
+            raise ValueError("Plan missing required field: day_name")
+        if "exercises" not in plan and "blocks" not in plan:
+            raise ValueError("Plan must have either 'exercises' or 'blocks'")
+
+        # When blocks provided without exercises, validate blocks and transform
+        if "blocks" in plan and "exercises" not in plan:
+            if not isinstance(plan["blocks"], list):
+                raise ValueError("Plan blocks must be a list")
+
+            valid_block_types = ["warmup", "strength", "cardio", "circuit", "accessory", "power"]
+            for i, block in enumerate(plan["blocks"]):
+                if "block_type" not in block:
+                    raise ValueError(f"Block {i} missing 'block_type' field")
+                if not isinstance(block["block_type"], str):
+                    raise ValueError(f"Block {i} 'block_type' must be a string")
+                if block["block_type"] not in valid_block_types:
+                    raise ValueError(f"Block {i} has invalid block_type: {block['block_type']}. Must be one of: {valid_block_types}")
+                if "exercises" not in block and "instructions" not in block:
+                    raise ValueError(f"Block {i} must have either 'exercises' or 'instructions'")
+
+            plan = _transform_block_plan(plan)
 
         if not isinstance(plan["exercises"], list):
             raise ValueError("Plan exercises must be a list")
