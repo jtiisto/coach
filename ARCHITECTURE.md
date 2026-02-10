@@ -68,6 +68,7 @@ class DatabaseManager:
     """Manages SQLite connections with read/write separation."""
     def execute_query(query, params, read_only=True) -> List[Dict]
     def execute_write(query, params) -> int
+    def transaction() -> ContextManager  # Multi-statement atomic writes
 
 class SQLiteConnection:
     """Context manager for SQLite connections."""
@@ -86,7 +87,7 @@ class SQLiteConnection:
 - `set_workout_plan(date, plan)` - Create/replace plan
 - `delete_workout_plan(date)` - Delete plan
 - `update_plan_metadata(date, updates)` - Modify plan fields
-- `add_exercise(date, exercise, position?)` - Insert exercise
+- `add_exercise(date, exercise, block_position)` - Insert exercise into block
 - `update_exercise(date, exercise_id, updates)` - Modify exercise
 - `remove_exercise(date, exercise_id)` - Delete exercise
 - `ingest_training_program(plans, transform_blocks?)` - Bulk import
@@ -136,26 +137,91 @@ app.add_middleware(
 
 ### 3. Database Schema
 
-SQLite database with four tables:
+SQLite database with normalized relational tables. All child tables use `ON DELETE CASCADE`.
 
 ```sql
--- Workout plans (server-authoritative)
-CREATE TABLE workout_plans (
-    date TEXT PRIMARY KEY,           -- YYYY-MM-DD
-    plan_json TEXT NOT NULL,         -- Full plan as JSON
-    last_modified TEXT NOT NULL,     -- ISO-8601 UTC timestamp
-    last_modified_by TEXT            -- "mcp" or client_id
+-- Plan tables (server-authoritative)
+CREATE TABLE workout_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,         -- YYYY-MM-DD
+    day_name TEXT NOT NULL,
+    location TEXT, phase TEXT,
+    duration_min INTEGER,
+    last_modified TEXT NOT NULL,        -- ISO-8601 UTC
+    modified_by TEXT, extra TEXT
 );
-CREATE INDEX idx_plans_modified ON workout_plans(last_modified);
 
--- Workout logs (user-controlled, last-write-wins)
-CREATE TABLE workout_logs (
-    date TEXT PRIMARY KEY,
-    log_json TEXT NOT NULL,
-    last_modified TEXT NOT NULL,
-    last_modified_by TEXT
+CREATE TABLE session_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES workout_sessions(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    block_type TEXT NOT NULL,           -- warmup, strength, circuit, cardio, etc.
+    title TEXT, duration_min INTEGER,
+    rest_guidance TEXT, rounds INTEGER,
+    UNIQUE(session_id, position)
 );
-CREATE INDEX idx_logs_modified ON workout_logs(last_modified);
+
+CREATE TABLE planned_exercises (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES workout_sessions(id) ON DELETE CASCADE,
+    block_id INTEGER NOT NULL REFERENCES session_blocks(id) ON DELETE CASCADE,
+    exercise_key TEXT NOT NULL,         -- e.g. "strength_1_1", "warmup_0"
+    position INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    exercise_type TEXT NOT NULL,        -- strength, duration, checklist, etc.
+    target_sets INTEGER, target_reps TEXT,
+    target_duration_min INTEGER, target_duration_sec INTEGER,
+    rounds INTEGER, work_duration_sec INTEGER, rest_duration_sec INTEGER,
+    guidance_note TEXT,
+    hide_weight INTEGER DEFAULT 0, show_time INTEGER DEFAULT 0,
+    extra TEXT,
+    UNIQUE(session_id, exercise_key)
+);
+
+CREATE TABLE checklist_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exercise_id INTEGER NOT NULL REFERENCES planned_exercises(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    item_text TEXT NOT NULL,
+    UNIQUE(exercise_id, position)
+);
+
+-- Log tables (user-controlled, last-write-wins)
+CREATE TABLE workout_session_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES workout_sessions(id),
+    date TEXT NOT NULL UNIQUE,
+    pain_discomfort TEXT, general_notes TEXT,
+    last_modified TEXT NOT NULL,
+    modified_by TEXT, extra TEXT
+);
+
+CREATE TABLE exercise_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_log_id INTEGER NOT NULL REFERENCES workout_session_logs(id) ON DELETE CASCADE,
+    exercise_id INTEGER REFERENCES planned_exercises(id),
+    exercise_key TEXT NOT NULL,
+    completed INTEGER DEFAULT 0,
+    user_note TEXT,
+    duration_min REAL, avg_hr INTEGER, max_hr INTEGER,
+    extra TEXT
+);
+
+CREATE TABLE set_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exercise_log_id INTEGER NOT NULL REFERENCES exercise_logs(id) ON DELETE CASCADE,
+    set_num INTEGER NOT NULL,
+    weight REAL, reps INTEGER, rpe REAL,
+    unit TEXT DEFAULT 'lbs',
+    duration_sec REAL, completed INTEGER DEFAULT 0,
+    extra TEXT
+);
+
+CREATE TABLE checklist_log_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exercise_log_id INTEGER NOT NULL REFERENCES exercise_logs(id) ON DELETE CASCADE,
+    item_text TEXT NOT NULL
+);
 
 -- Client tracking
 CREATE TABLE clients (
@@ -190,10 +256,11 @@ App
 ├── CalendarPicker
 │   └── CalendarModal
 ├── WorkoutView
-│   ├── ExerciseItem
-│   │   ├── SetEntry (strength)
-│   │   ├── CardioEntry (duration)
-│   │   └── ChecklistEntry (checklist)
+│   ├── BlockView
+│   │   └── ExerciseItem
+│   │       ├── SetEntry (strength/circuit)
+│   │       ├── CardioEntry (duration)
+│   │       └── ChecklistEntry (checklist)
 │   └── SessionFeedback
 └── Notifications
 ```
@@ -246,13 +313,35 @@ syncStatus = 'green'
 
 ### Plan Object
 
+Plans always contain a `blocks` array. Each block groups related exercises.
+
 ```json
 {
     "day_name": "Lower Body + Conditioning",
     "location": "Home",
     "phase": "Foundation",
     "total_duration_min": 60,
-    "exercises": [...]
+    "blocks": [
+        {
+            "block_index": 0,
+            "block_type": "warmup",
+            "title": "The Stability Start",
+            "exercises": [...]
+        },
+        {
+            "block_index": 1,
+            "block_type": "strength",
+            "title": "Strength Block",
+            "rest_guidance": "Rest until HR <= 130",
+            "exercises": [...]
+        },
+        {
+            "block_index": 2,
+            "block_type": "cardio",
+            "title": "Conditioning",
+            "exercises": [...]
+        }
+    ]
 }
 ```
 
@@ -306,28 +395,32 @@ syncStatus = 'green'
 
 ## Block Transform System
 
-The `ingest_training_program` tool accepts LLM-friendly block format and transforms it:
+Both `set_workout_plan` and `ingest_training_program` accept LLM-friendly block format and auto-transform it when `_needs_transform()` detects raw LLM format (exercises missing `id` or `type` fields, or cardio blocks with instruction text).
+
+The transform (`_transform_block_plan()`) normalizes blocks in-place:
 
 ```
-Block Format                      Flat Exercise Format
-─────────────                     ────────────────────
+Raw LLM Block Format              Transformed Block Format
+────────────────────              ────────────────────────
 {                                 {
-  "blocks": [                       "exercises": [
+  "blocks": [                       "blocks": [
     {                                 {
-      "block_type": "warmup",           "id": "warmup_0",
-      "title": "Start",                 "name": "Start",
-      "exercises": [                    "type": "checklist",
-        {"name": "Stretch"}             "items": ["Stretch"]
-      ]                               }
-    }                               ]
-  ]                               }
-}
+      "block_type": "warmup",           "block_type": "warmup",
+      "title": "Start",                 "title": "Start",
+      "exercises": [                    "exercises": [
+        {"name": "Stretch"}               {"id": "warmup_0", "name": "Start",
+      ]                                    "type": "checklist",
+    }                                      "items": ["Stretch"]}
+  ]                                     ]
+}                                     }
+                                    ]
+                                  }
 ```
 
-Transform logic in `_transform_block_to_exercises()`:
-1. Warmup blocks → Single checklist exercise
-2. Strength/accessory blocks → Individual strength exercises
-3. Circuit/power blocks → Strength exercises with `target_sets` from block-level `rounds` field
+Transform logic in `_transform_block_plan()`:
+1. Warmup blocks → Single checklist exercise with items from block exercises
+2. Strength/accessory blocks → Individual strength exercises with generated IDs
+3. Circuit/power blocks → Circuit exercises with `target_sets` from block-level `rounds`
 4. Cardio blocks with instructions → Duration/interval exercises
 5. The optional `equipment` field on exercises (`"bodyweight"`, `"band"`, `"kettlebell"`, `"dumbbell"`, `"barbell"`, `"machine"`, `"cable"`) drives `hide_weight`. Values `"bodyweight"` and `"band"` set `hide_weight: true`. When `equipment` is absent, the name-based heuristic (`_is_bodyweight_or_band()`) is used as a fallback.
 
@@ -355,10 +448,13 @@ Circuit and power blocks use an explicit `rounds` field at the block level to sp
 test/
 ├── conftest.py              # Shared fixtures, test DB setup
 ├── unit/
-│   └── test_database.py     # Database manager tests
+│   ├── test_database.py     # Database schema and table tests
+│   └── test_transform.py    # Block transform and exercise rendering tests
 └── integration/
     ├── test_mcp_tools.py    # All MCP tool tests
-    └── test_sync.py         # Client sync tests
+    ├── test_sync.py         # POST /api/workout/sync (log upload) tests
+    ├── test_sync_full.py    # GET /api/workout/sync (full sync) tests
+    └── test_static_files.py # Static file serving and CORS tests
 ```
 
 ### Test Database

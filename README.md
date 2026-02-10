@@ -117,7 +117,7 @@ Add to your Claude desktop config (`~/.config/claude/claude_desktop_config.json`
 
 | Tool | Description |
 |------|-------------|
-| `set_workout_plan` | Create or replace a workout plan for a date |
+| `set_workout_plan` | Create or replace a workout plan (requires blocks) |
 | `delete_workout_plan` | Remove a workout plan |
 | `update_plan_metadata` | Update plan-level fields (name, location, phase) |
 | `ingest_training_program` | Bulk import multiple plans at once |
@@ -126,7 +126,7 @@ Add to your Claude desktop config (`~/.config/claude/claude_desktop_config.json`
 
 | Tool | Description |
 |------|-------------|
-| `add_exercise` | Add an exercise to an existing plan |
+| `add_exercise` | Add an exercise to a block in an existing plan |
 | `update_exercise` | Modify exercise fields |
 | `remove_exercise` | Remove an exercise from a plan |
 
@@ -138,33 +138,40 @@ Add to your Claude desktop config (`~/.config/claude/claude_desktop_config.json`
 
 ### Example: Creating a Workout Plan
 
+Plans require a `blocks` array. Raw LLM format (exercises without `id`/`type`) is auto-transformed.
+
 ```python
 # Using set_workout_plan MCP tool
 set_workout_plan("2026-02-02", {
     "day_name": "Lower Body + Conditioning",
     "location": "Home",
     "phase": "Foundation",
-    "exercises": [
+    "blocks": [
         {
-            "id": "warmup_1",
-            "name": "Stability Start",
-            "type": "checklist",
-            "items": ["Cat-Cow x10", "Bird-Dog x5/side"]
+            "block_type": "warmup",
+            "title": "Stability Start",
+            "exercises": [
+                {"id": "warmup_0", "name": "Stability Start", "type": "checklist",
+                 "items": ["Cat-Cow x10", "Bird-Dog x5/side"]}
+            ]
         },
         {
-            "id": "ex_1",
-            "name": "KB Goblet Squat",
-            "type": "strength",
-            "target_sets": 3,
-            "target_reps": "10",
-            "guidance_note": "Tempo 3-1-1. Rest until HR <= 130."
+            "block_type": "strength",
+            "title": "Strength Block",
+            "rest_guidance": "Rest until HR <= 130",
+            "exercises": [
+                {"id": "ex_1", "name": "KB Goblet Squat", "type": "strength",
+                 "target_sets": 3, "target_reps": "10",
+                 "guidance_note": "Tempo 3-1-1. Rest until HR <= 130."}
+            ]
         },
         {
-            "id": "cardio_1",
-            "name": "Zone 2 Bike",
-            "type": "duration",
-            "target_duration_min": 15,
-            "guidance_note": "HR 135-148"
+            "block_type": "cardio",
+            "title": "Conditioning",
+            "exercises": [
+                {"id": "cardio_1", "name": "Zone 2 Bike", "type": "duration",
+                 "target_duration_min": 15, "guidance_note": "HR 135-148"}
+            ]
         }
     ]
 })
@@ -211,7 +218,7 @@ ingest_training_program({
 
 ### LLM Plan Generation Format
 
-For detailed documentation on the block-based JSON format that LLMs should use when generating workout plans, see [exercise_plan_format.md](exercise_plan_format.md). This format is automatically transformed by `ingest_training_program` when `transform_blocks=True`.
+For detailed documentation on the block-based JSON format that LLMs should use when generating workout plans, see [exercise_plan_format.md](exercise_plan_format.md). This format is automatically transformed by both `set_workout_plan` (auto-detected) and `ingest_training_program` (when `transform_blocks=True`).
 
 ## Exercise Types
 

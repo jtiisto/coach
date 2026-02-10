@@ -1,6 +1,6 @@
 # LLM Exercise Plan Generation Format
 
-This document defines the structured JSON format that LLMs must use when creating or revising exercise plans for the Exercise Tracker. This structure is designed to be ingested directly into the `workout_plans` database table via the `set_workout_plan` MCP tool.
+This document defines the structured JSON format that LLMs must use when creating or revising exercise plans for the Exercise Tracker. This structure is designed to be ingested via the `set_workout_plan` or `ingest_training_program` MCP tools, which store plans in normalized relational tables (`workout_sessions`, `session_blocks`, `planned_exercises`).
 
 ## 1. Output Requirement
 
