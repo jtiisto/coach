@@ -414,7 +414,7 @@ class TestTransformBlockPlan:
         assert result["phase"] == "Building"
         assert result["total_duration_min"] == 45
         assert len(result["blocks"]) == 1
-        assert len(result["exercises"]) == 1
+        assert len(result["blocks"][0]["exercises"]) == 1
 
     def test_defaults_when_fields_missing(self):
         """Missing fields get sensible defaults."""
@@ -425,8 +425,8 @@ class TestTransformBlockPlan:
         assert result["phase"] == "Foundation"
         assert result["total_duration_min"] == 60
 
-    def test_multiple_blocks_flatten_exercises(self):
-        """Exercises from multiple blocks are flattened into one list."""
+    def test_multiple_blocks_have_exercises(self):
+        """Exercises from multiple blocks are in their respective blocks."""
         plan_data = {
             "theme": "Full Body",
             "blocks": [
@@ -450,7 +450,8 @@ class TestTransformBlockPlan:
         }
         result = _transform_block_plan(plan_data)
         assert len(result["blocks"]) == 3
-        assert len(result["exercises"]) == 3
+        total_exercises = sum(len(b["exercises"]) for b in result["blocks"])
+        assert total_exercises == 3
 
 
 # --- coach plan guide ---

@@ -82,57 +82,178 @@ def get_db():
     """Context manager for database connections."""
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
     finally:
         conn.close()
 
 
-def init_database():
-    """Initialize the database with required tables."""
-    with get_db() as conn:
-        cursor = conn.cursor()
+def init_database(db_path=None):
+    """Initialize the database with required tables.
 
-        # workout_plans table - server-authoritative plans
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS workout_plans (
-                date TEXT PRIMARY KEY,
-                plan_json TEXT NOT NULL,
-                last_modified TEXT NOT NULL,
-                last_modified_by TEXT
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_plans_modified ON workout_plans(last_modified)")
+    Args:
+        db_path: Optional path override. If None, uses DATABASE_PATH.
+    """
+    path = str(db_path) if db_path else str(DATABASE_PATH)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
 
-        # workout_logs table - user workout logs
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS workout_logs (
-                date TEXT PRIMARY KEY,
-                log_json TEXT NOT NULL,
-                last_modified TEXT NOT NULL,
-                last_modified_by TEXT
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_modified ON workout_logs(last_modified)")
+    # workout_sessions - one row per scheduled workout day
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS workout_sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            date          TEXT NOT NULL UNIQUE,
+            day_name      TEXT NOT NULL,
+            location      TEXT,
+            phase         TEXT,
+            duration_min  INTEGER,
+            last_modified TEXT NOT NULL,
+            modified_by   TEXT,
+            extra         TEXT
+        )
+    """)
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_date ON workout_sessions(date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_modified ON workout_sessions(last_modified)")
 
-        # clients table - track connected clients
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS clients (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                last_seen_at TEXT
-            )
-        """)
+    # session_blocks - block groupings within a session
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS session_blocks (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER NOT NULL REFERENCES workout_sessions(id) ON DELETE CASCADE,
+            position       INTEGER NOT NULL,
+            block_type     TEXT NOT NULL,
+            title          TEXT,
+            duration_min   INTEGER,
+            rest_guidance  TEXT,
+            rounds         INTEGER,
+            UNIQUE(session_id, position)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_blocks_session ON session_blocks(session_id)")
 
-        # meta_sync table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS meta_sync (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
+    # planned_exercises - individual exercises, directly queryable
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS planned_exercises (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER NOT NULL REFERENCES workout_sessions(id) ON DELETE CASCADE,
+            block_id        INTEGER NOT NULL REFERENCES session_blocks(id) ON DELETE CASCADE,
+            exercise_key    TEXT NOT NULL,
+            position        INTEGER NOT NULL,
+            name            TEXT NOT NULL,
+            exercise_type   TEXT NOT NULL,
+            target_sets     INTEGER,
+            target_reps     TEXT,
+            target_duration_min INTEGER,
+            target_duration_sec INTEGER,
+            rounds          INTEGER,
+            work_duration_sec   INTEGER,
+            rest_duration_sec   INTEGER,
+            guidance_note   TEXT,
+            hide_weight     INTEGER DEFAULT 0,
+            show_time       INTEGER DEFAULT 0,
+            extra           TEXT,
+            UNIQUE(session_id, exercise_key)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercises_session ON planned_exercises(session_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercises_name ON planned_exercises(name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercises_type ON planned_exercises(exercise_type)")
 
-        conn.commit()
+    # checklist_items - normalized checklist items for warmup/checklist exercises
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS checklist_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            exercise_id     INTEGER NOT NULL REFERENCES planned_exercises(id) ON DELETE CASCADE,
+            position        INTEGER NOT NULL,
+            item_text       TEXT NOT NULL,
+            UNIQUE(exercise_id, position)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_checklist_items_exercise ON checklist_items(exercise_id)")
+
+    # workout_session_logs - session-level log data
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS workout_session_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER REFERENCES workout_sessions(id),
+            date            TEXT NOT NULL UNIQUE,
+            pain_discomfort TEXT,
+            general_notes   TEXT,
+            last_modified   TEXT NOT NULL,
+            modified_by     TEXT,
+            extra           TEXT
+        )
+    """)
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_session_logs_date ON workout_session_logs(date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_logs_modified ON workout_session_logs(last_modified)")
+
+    # exercise_logs - per-exercise completion data
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_log_id  INTEGER NOT NULL REFERENCES workout_session_logs(id) ON DELETE CASCADE,
+            exercise_id     INTEGER REFERENCES planned_exercises(id),
+            exercise_key    TEXT NOT NULL,
+            completed       INTEGER DEFAULT 0,
+            user_note       TEXT,
+            duration_min    REAL,
+            avg_hr          INTEGER,
+            max_hr          INTEGER,
+            extra           TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercise_logs_session ON exercise_logs(session_log_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercise_logs_exercise ON exercise_logs(exercise_id)")
+
+    # checklist_log_items - completed checklist items
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS checklist_log_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            exercise_log_id INTEGER NOT NULL REFERENCES exercise_logs(id) ON DELETE CASCADE,
+            item_text       TEXT NOT NULL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_checklist_log_items_exercise ON checklist_log_items(exercise_log_id)")
+
+    # set_logs - individual set data
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS set_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            exercise_log_id INTEGER NOT NULL REFERENCES exercise_logs(id) ON DELETE CASCADE,
+            set_num         INTEGER NOT NULL,
+            weight          REAL,
+            reps            INTEGER,
+            rpe             REAL,
+            unit            TEXT DEFAULT 'lbs',
+            duration_sec    REAL,
+            completed       INTEGER DEFAULT 0,
+            extra           TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_set_logs_exercise ON set_logs(exercise_log_id)")
+
+    # clients table - track connected clients (unchanged)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS clients (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            last_seen_at TEXT
+        )
+    """)
+
+    # meta_sync table (unchanged)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS meta_sync (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
 
 
 def get_utc_now() -> str:
@@ -140,17 +261,239 @@ def get_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# ==================== Plan/Log Assembly Helpers ====================
+
+
+def _assemble_plan(conn, session_row):
+    """Assemble plan dict from relational tables for sync response."""
+    cursor = conn.cursor()
+    session_id = session_row["id"]
+
+    cursor.execute("""
+        SELECT * FROM session_blocks WHERE session_id = ? ORDER BY position
+    """, (session_id,))
+    block_rows = cursor.fetchall()
+
+    blocks = []
+    for br in block_rows:
+        cursor.execute("""
+            SELECT * FROM planned_exercises WHERE block_id = ? ORDER BY position
+        """, (br["id"],))
+        ex_rows = cursor.fetchall()
+
+        exercises = []
+        for er in ex_rows:
+            exercise = {
+                "id": er["exercise_key"],
+                "name": er["name"],
+                "type": er["exercise_type"],
+            }
+            if er["target_sets"] is not None:
+                exercise["target_sets"] = er["target_sets"]
+            if er["target_reps"] is not None:
+                exercise["target_reps"] = er["target_reps"]
+            if er["target_duration_min"] is not None:
+                exercise["target_duration_min"] = er["target_duration_min"]
+            if er["target_duration_sec"] is not None:
+                exercise["target_duration_sec"] = er["target_duration_sec"]
+            if er["rounds"] is not None:
+                exercise["rounds"] = er["rounds"]
+            if er["work_duration_sec"] is not None:
+                exercise["work_duration_sec"] = er["work_duration_sec"]
+            if er["rest_duration_sec"] is not None:
+                exercise["rest_duration_sec"] = er["rest_duration_sec"]
+            if er["guidance_note"]:
+                exercise["guidance_note"] = er["guidance_note"]
+            if er["hide_weight"]:
+                exercise["hide_weight"] = True
+            if er["show_time"]:
+                exercise["show_time"] = True
+
+            if er["exercise_type"] == "checklist":
+                cursor.execute("""
+                    SELECT item_text FROM checklist_items
+                    WHERE exercise_id = ? ORDER BY position
+                """, (er["id"],))
+                exercise["items"] = [r["item_text"] for r in cursor.fetchall()]
+
+            exercises.append(exercise)
+
+        blocks.append({
+            "block_index": br["position"],
+            "block_type": br["block_type"],
+            "title": br["title"],
+            "duration_min": br["duration_min"],
+            "rest_guidance": br["rest_guidance"] or "",
+            "rounds": br["rounds"],
+            "exercises": exercises,
+        })
+
+    return {
+        "day_name": session_row["day_name"],
+        "location": session_row["location"],
+        "phase": session_row["phase"],
+        "total_duration_min": session_row["duration_min"],
+        "blocks": blocks,
+    }
+
+
+def _assemble_log(conn, log_row):
+    """Assemble log dict from relational tables for sync response."""
+    cursor = conn.cursor()
+    log = {}
+
+    # Session feedback
+    feedback = {}
+    if log_row["pain_discomfort"]:
+        feedback["pain_discomfort"] = log_row["pain_discomfort"]
+    if log_row["general_notes"]:
+        feedback["general_notes"] = log_row["general_notes"]
+    log["session_feedback"] = feedback
+
+    # Exercise logs
+    cursor.execute("""
+        SELECT * FROM exercise_logs WHERE session_log_id = ?
+    """, (log_row["id"],))
+
+    for el in cursor.fetchall():
+        entry = {}
+        if el["completed"]:
+            entry["completed"] = True
+        if el["user_note"]:
+            entry["user_note"] = el["user_note"]
+        if el["duration_min"] is not None:
+            entry["duration_min"] = el["duration_min"]
+        if el["avg_hr"] is not None:
+            entry["avg_hr"] = el["avg_hr"]
+        if el["max_hr"] is not None:
+            entry["max_hr"] = el["max_hr"]
+
+        # Sets
+        cursor.execute("""
+            SELECT * FROM set_logs WHERE exercise_log_id = ? ORDER BY set_num
+        """, (el["id"],))
+        sets = cursor.fetchall()
+        if sets:
+            entry["sets"] = []
+            for s in sets:
+                set_dict = {"set_num": s["set_num"]}
+                if s["weight"] is not None:
+                    set_dict["weight"] = s["weight"]
+                if s["reps"] is not None:
+                    set_dict["reps"] = s["reps"]
+                if s["rpe"] is not None:
+                    set_dict["rpe"] = s["rpe"]
+                if s["unit"]:
+                    set_dict["unit"] = s["unit"]
+                if s["duration_sec"] is not None:
+                    set_dict["duration_sec"] = s["duration_sec"]
+                if s["completed"]:
+                    set_dict["completed"] = True
+                entry["sets"].append(set_dict)
+
+        # Checklist items
+        cursor.execute("""
+            SELECT item_text FROM checklist_log_items WHERE exercise_log_id = ?
+        """, (el["id"],))
+        items = cursor.fetchall()
+        if items:
+            entry["completed_items"] = [r["item_text"] for r in items]
+
+        log[el["exercise_key"]] = entry
+
+    return log
+
+
+def _store_log(conn, date_str, log_data, client_id, now):
+    """Decompose a log dict into relational tables."""
+    cursor = conn.cursor()
+
+    # Extract session feedback
+    feedback = log_data.get("session_feedback", {})
+    pain = feedback.get("pain_discomfort")
+    notes = feedback.get("general_notes")
+
+    # Find session for this date
+    cursor.execute("SELECT id FROM workout_sessions WHERE date = ?", (date_str,))
+    session_row = cursor.fetchone()
+    session_id = session_row["id"] if session_row else None
+
+    # Delete existing log for this date (CASCADE cleans exercise_logs, set_logs, etc.)
+    cursor.execute("DELETE FROM workout_session_logs WHERE date = ?", (date_str,))
+
+    # Insert session log
+    cursor.execute("""
+        INSERT INTO workout_session_logs
+        (session_id, date, pain_discomfort, general_notes, last_modified, modified_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (session_id, date_str, pain, notes, now, client_id))
+    session_log_id = cursor.lastrowid
+
+    # Process exercise entries
+    meta_keys = {"session_feedback", "_lastModifiedAt", "_lastModifiedBy"}
+    for exercise_key, exercise_data in log_data.items():
+        if exercise_key in meta_keys:
+            continue
+        if not isinstance(exercise_data, dict):
+            continue
+
+        # Find planned_exercises.id for this exercise_key
+        exercise_id = None
+        if session_id:
+            cursor.execute("""
+                SELECT id FROM planned_exercises
+                WHERE session_id = ? AND exercise_key = ?
+            """, (session_id, exercise_key))
+            ex_row = cursor.fetchone()
+            if ex_row:
+                exercise_id = ex_row["id"]
+
+        # Insert exercise log
+        cursor.execute("""
+            INSERT INTO exercise_logs
+            (session_log_id, exercise_id, exercise_key, completed, user_note,
+             duration_min, avg_hr, max_hr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_log_id, exercise_id, exercise_key,
+            1 if exercise_data.get("completed") else 0,
+            exercise_data.get("user_note"),
+            exercise_data.get("duration_min"),
+            exercise_data.get("avg_hr"),
+            exercise_data.get("max_hr"),
+        ))
+        exercise_log_id = cursor.lastrowid
+
+        # Store sets
+        for s in exercise_data.get("sets", []):
+            cursor.execute("""
+                INSERT INTO set_logs
+                (exercise_log_id, set_num, weight, reps, rpe, unit, duration_sec, completed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                exercise_log_id, s.get("set_num", 0),
+                s.get("weight"), s.get("reps"), s.get("rpe"),
+                s.get("unit", "lbs"), s.get("duration_sec"),
+                1 if s.get("completed") else 0,
+            ))
+
+        # Store checklist items
+        for item in exercise_data.get("completed_items", []):
+            cursor.execute("""
+                INSERT INTO checklist_log_items (exercise_log_id, item_text)
+                VALUES (?, ?)
+            """, (exercise_log_id, item))
+
+
 # Pydantic models
 class WorkoutSyncPayload(BaseModel):
     clientId: str
     logs: dict[str, Any] = {}  # date -> log_json
 
-
 class WorkoutSyncResponse(BaseModel):
-    plans: dict[str, Any]  # date -> plan_json
-    logs: dict[str, Any]   # date -> log_json
+    plans: dict[str, Any]  # date -> plan
+    logs: dict[str, Any]   # date -> log
     serverTime: str
-
 
 class StatusResponse(BaseModel):
     lastModified: Optional[str] = None
@@ -203,44 +546,44 @@ def workout_sync_get(
             UPDATE clients SET last_seen_at = ? WHERE id = ?
         """, (now, client_id))
 
-        # Fetch plans
+        # Fetch plans from workout_sessions
         if last_sync_time:
             cursor.execute("""
-                SELECT date, plan_json, last_modified
-                FROM workout_plans
+                SELECT * FROM workout_sessions
                 WHERE last_modified > ?
+                ORDER BY date
             """, (last_sync_time,))
         else:
-            cursor.execute("SELECT date, plan_json, last_modified FROM workout_plans")
+            cursor.execute("SELECT * FROM workout_sessions ORDER BY date")
 
-        plan_rows = cursor.fetchall()
+        session_rows = cursor.fetchall()
         plans = {}
-        for row in plan_rows:
-            plan_data = json.loads(row["plan_json"])
-            plan_data["_lastModified"] = row["last_modified"]
-            plans[row["date"]] = plan_data
+        for row in session_rows:
+            plan = _assemble_plan(conn, row)
+            plan["_lastModified"] = row["last_modified"]
+            plans[row["date"]] = plan
 
-        # Fetch logs (last 30 days for full sync, or changes since last_sync_time)
+        # Fetch logs from workout_session_logs
         if last_sync_time:
             cursor.execute("""
-                SELECT date, log_json, last_modified
-                FROM workout_logs
+                SELECT * FROM workout_session_logs
                 WHERE last_modified > ?
+                ORDER BY date
             """, (last_sync_time,))
         else:
             thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             cursor.execute("""
-                SELECT date, log_json, last_modified
-                FROM workout_logs
+                SELECT * FROM workout_session_logs
                 WHERE date >= ?
+                ORDER BY date
             """, (thirty_days_ago,))
 
         log_rows = cursor.fetchall()
         logs = {}
         for row in log_rows:
-            log_data = json.loads(row["log_json"])
-            log_data["_lastModified"] = row["last_modified"]
-            logs[row["date"]] = log_data
+            log = _assemble_log(conn, row)
+            log["_lastModified"] = row["last_modified"]
+            logs[row["date"]] = log
 
         conn.commit()
         return WorkoutSyncResponse(plans=plans, logs=logs, serverTime=now)
@@ -263,18 +606,12 @@ def workout_sync_post(payload: WorkoutSyncPayload):
             VALUES (?, ?, ?)
         """, (client_id, f"Client-{client_id[:8]}", now))
 
-        applied_logs = {}
+        applied_logs = []
 
         # Process each log
         for date_str, log_data in payload.logs.items():
-            log_json = json.dumps(log_data)
-
-            cursor.execute("""
-                INSERT OR REPLACE INTO workout_logs (date, log_json, last_modified, last_modified_by)
-                VALUES (?, ?, ?, ?)
-            """, (date_str, log_json, now, client_id))
-
-            applied_logs[date_str] = log_data
+            _store_log(conn, date_str, log_data, client_id, now)
+            applied_logs.append(date_str)
 
         # Update server sync time
         cursor.execute("""
@@ -286,7 +623,7 @@ def workout_sync_post(payload: WorkoutSyncPayload):
 
         return {
             "success": True,
-            "appliedLogs": list(applied_logs.keys()),
+            "appliedLogs": applied_logs,
             "serverTime": now
         }
 
@@ -343,175 +680,210 @@ def seed_test_data():
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     now = get_utc_now()
 
-    # Sample workout plan for today
-    today_plan = {
-        "day_name": "Test Day - Lower Body + Conditioning",
-        "location": "Home",
-        "phase": "Foundation",
-        "total_duration_min": 60,
-        "exercises": [
-            {
-                "id": "warmup_1",
-                "name": "Stability Start",
-                "type": "checklist",
-                "items": [
-                    "Cat-Cow x10",
-                    "Bird-Dog x5/side",
-                    "Dead Bug x10",
-                    "Single-Leg Balance 30s/side",
-                    "Thoracic Rotations x5/side",
-                    "Leg Swings x10/direction"
-                ]
-            },
-            {
-                "id": "ex_1",
-                "name": "KB Goblet Squat",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "10",
-                "guidance_note": "Tempo 3-1-1. Parallel depth, heels down. Rest until HR <= 130."
-            },
-            {
-                "id": "ex_2",
-                "name": "DB Romanian Deadlift",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "10",
-                "guidance_note": "Tempo 3-1-1. Feel hamstring stretch."
-            },
-            {
-                "id": "ex_3",
-                "name": "DB Reverse Lunge",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "8/leg",
-                "guidance_note": "Tempo 2-1-1. Step back, knee hovers."
-            },
-            {
-                "id": "ex_4",
-                "name": "Single-Leg Glute Bridge",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "10/leg",
-                "guidance_note": "Tempo 2-2-1. Squeeze at top 2 sec."
-            },
-            {
-                "id": "ex_5",
-                "name": "DB Single-Arm Row",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "10/side",
-                "guidance_note": "Tempo 2-1-1. Pull to hip, squeeze."
-            },
-            {
-                "id": "cardio_1",
-                "name": "Zone 2 Bike",
-                "type": "duration",
-                "target_duration_min": 15,
-                "guidance_note": "5 min warm-up (HR <130), then 10 min STRICT Zone 2 (HR 135-148). Target avg: 140-145 bpm."
-            }
-        ]
-    }
-
-    # Plan for tomorrow (to show date navigation works)
-    tomorrow_plan = {
-        "day_name": "Test Day - Heavy Compound",
-        "location": "Gym",
-        "phase": "Foundation",
-        "total_duration_min": 70,
-        "exercises": [
-            {
-                "id": "warmup_1",
-                "name": "Stability Start",
-                "type": "checklist",
-                "items": ["Cat-Cow x10", "Bird-Dog x5/side", "Dead Bug x10"]
-            },
-            {
-                "id": "ex_1",
-                "name": "Trap Bar Deadlift",
-                "type": "strength",
-                "target_sets": 4,
-                "target_reps": "5",
-                "guidance_note": "RPE 7-8. Warm up: Bar only, 50%, 70%."
-            },
-            {
-                "id": "ex_2",
-                "name": "Assisted Dips",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "6-8",
-                "guidance_note": "RPE 7-8. Control descent 2 sec."
-            },
-            {
-                "id": "cardio_1",
-                "name": "Zone 2 Elliptical",
-                "type": "duration",
-                "target_duration_min": 25,
-                "guidance_note": "Maintain HR 135-148. Reduce resistance if HR rises."
-            }
-        ]
-    }
-
-    # Sample completed log from yesterday
-    yesterday_log = {
-        "session_feedback": {
-            "pain_discomfort": "Minor knee tightness, resolved after warmup",
-            "general_notes": "Good energy, felt strong on squats"
-        },
-        "warmup_1": {
-            "completed_items": ["Cat-Cow x10", "Bird-Dog x5/side", "Dead Bug x10"]
-        },
-        "ex_1": {
-            "completed": True,
-            "user_note": "Used 53lb KB, felt solid",
-            "sets": [
-                {"set_num": 1, "weight": 53, "reps": 10, "rpe": 6, "unit": "lbs"},
-                {"set_num": 2, "weight": 53, "reps": 10, "rpe": 7, "unit": "lbs"},
-                {"set_num": 3, "weight": 53, "reps": 10, "rpe": 7.5, "unit": "lbs"}
-            ]
-        },
-        "ex_2": {
-            "completed": True,
-            "sets": [
-                {"set_num": 1, "weight": 45, "reps": 10, "rpe": 6, "unit": "lbs"},
-                {"set_num": 2, "weight": 45, "reps": 10, "rpe": 7, "unit": "lbs"},
-                {"set_num": 3, "weight": 45, "reps": 10, "rpe": 7, "unit": "lbs"}
-            ]
-        },
-        "cardio_1": {
-            "completed": True,
-            "duration_min": 16,
-            "avg_hr": 142,
-            "max_hr": 151
-        }
-    }
-
     with get_db() as conn:
         cursor = conn.cursor()
 
-        # Insert today's plan
+        # --- Today's plan: Lower Body + Conditioning ---
         cursor.execute("""
-            INSERT OR REPLACE INTO workout_plans (date, plan_json, last_modified, last_modified_by)
-            VALUES (?, ?, ?, ?)
-        """, (today, json.dumps(today_plan), now, "test_seed"))
+            INSERT OR REPLACE INTO workout_sessions
+            (date, day_name, location, phase, duration_min, last_modified, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (today, "Test Day - Lower Body + Conditioning", "Home", "Foundation", 60, now, "test_seed"))
+        s1 = cursor.lastrowid
 
-        # Insert tomorrow's plan
+        # Warmup block
         cursor.execute("""
-            INSERT OR REPLACE INTO workout_plans (date, plan_json, last_modified, last_modified_by)
+            INSERT INTO session_blocks (session_id, position, block_type, title)
             VALUES (?, ?, ?, ?)
-        """, (tomorrow, json.dumps(tomorrow_plan), now, "test_seed"))
+        """, (s1, 0, "warmup", "Stability Start"))
+        b1_warmup = cursor.lastrowid
 
-        # Insert yesterday's log
         cursor.execute("""
-            INSERT OR REPLACE INTO workout_logs (date, log_json, last_modified, last_modified_by)
+            INSERT INTO planned_exercises
+            (session_id, block_id, exercise_key, position, name, exercise_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (s1, b1_warmup, "warmup_0", 0, "Stability Start", "checklist"))
+        e_warmup = cursor.lastrowid
+
+        for i, item in enumerate([
+            "Cat-Cow x10", "Bird-Dog x5/side", "Dead Bug x10",
+            "Single-Leg Balance 30s/side", "Thoracic Rotations x5/side",
+            "Leg Swings x10/direction"
+        ]):
+            cursor.execute(
+                "INSERT INTO checklist_items (exercise_id, position, item_text) VALUES (?, ?, ?)",
+                (e_warmup, i, item)
+            )
+
+        # Strength block
+        cursor.execute("""
+            INSERT INTO session_blocks
+            (session_id, position, block_type, title, rest_guidance)
+            VALUES (?, ?, ?, ?, ?)
+        """, (s1, 1, "strength", "Strength Block", "Rest until HR <= 130"))
+        b1_strength = cursor.lastrowid
+
+        for key, pos, name, sets, reps, note, hide in [
+            ("ex_1", 0, "KB Goblet Squat", 3, "10",
+             "Tempo 3-1-1. Parallel depth, heels down. Rest until HR <= 130.", 0),
+            ("ex_2", 1, "DB Romanian Deadlift", 3, "10",
+             "Tempo 3-1-1. Feel hamstring stretch.", 0),
+            ("ex_3", 2, "DB Reverse Lunge", 3, "8/leg",
+             "Tempo 2-1-1. Step back, knee hovers.", 0),
+            ("ex_4", 3, "Single-Leg Glute Bridge", 3, "10/leg",
+             "Tempo 2-2-1. Squeeze at top 2 sec.", 1),
+            ("ex_5", 4, "DB Single-Arm Row", 3, "10/side",
+             "Tempo 2-1-1. Pull to hip, squeeze.", 0),
+        ]:
+            cursor.execute("""
+                INSERT INTO planned_exercises
+                (session_id, block_id, exercise_key, position, name, exercise_type,
+                 target_sets, target_reps, guidance_note, hide_weight)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (s1, b1_strength, key, pos, name, "strength", sets, reps, note, hide))
+
+        # Cardio block
+        cursor.execute("""
+            INSERT INTO session_blocks (session_id, position, block_type, title)
             VALUES (?, ?, ?, ?)
-        """, (yesterday, json.dumps(yesterday_log), now, "test_seed"))
+        """, (s1, 2, "cardio", "Conditioning"))
+        b1_cardio = cursor.lastrowid
+
+        cursor.execute("""
+            INSERT INTO planned_exercises
+            (session_id, block_id, exercise_key, position, name, exercise_type,
+             target_duration_min, guidance_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (s1, b1_cardio, "cardio_1", 0, "Zone 2 Bike", "duration", 15,
+              "5 min warm-up (HR <130), then 10 min STRICT Zone 2 (HR 135-148). Target avg: 140-145 bpm."))
+
+        # --- Tomorrow's plan: Heavy Compound ---
+        cursor.execute("""
+            INSERT INTO workout_sessions
+            (date, day_name, location, phase, duration_min, last_modified, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (tomorrow, "Test Day - Heavy Compound", "Gym", "Foundation", 70, now, "test_seed"))
+        s2 = cursor.lastrowid
+
+        cursor.execute("""
+            INSERT INTO session_blocks (session_id, position, block_type, title)
+            VALUES (?, ?, ?, ?)
+        """, (s2, 0, "warmup", "Stability Start"))
+        b2_warmup = cursor.lastrowid
+
+        cursor.execute("""
+            INSERT INTO planned_exercises
+            (session_id, block_id, exercise_key, position, name, exercise_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (s2, b2_warmup, "warmup_0", 0, "Stability Start", "checklist"))
+        e2_warmup = cursor.lastrowid
+
+        for i, item in enumerate(["Cat-Cow x10", "Bird-Dog x5/side", "Dead Bug x10"]):
+            cursor.execute(
+                "INSERT INTO checklist_items (exercise_id, position, item_text) VALUES (?, ?, ?)",
+                (e2_warmup, i, item)
+            )
+
+        cursor.execute("""
+            INSERT INTO session_blocks (session_id, position, block_type, title)
+            VALUES (?, ?, ?, ?)
+        """, (s2, 1, "strength", "Heavy Compound"))
+        b2_strength = cursor.lastrowid
+
+        cursor.execute("""
+            INSERT INTO planned_exercises
+            (session_id, block_id, exercise_key, position, name, exercise_type,
+             target_sets, target_reps, guidance_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (s2, b2_strength, "ex_1", 0, "Trap Bar Deadlift", "strength",
+              4, "5", "RPE 7-8. Warm up: Bar only, 50%, 70%."))
+
+        cursor.execute("""
+            INSERT INTO planned_exercises
+            (session_id, block_id, exercise_key, position, name, exercise_type,
+             target_sets, target_reps, guidance_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (s2, b2_strength, "ex_2", 1, "Assisted Dips", "strength",
+              3, "6-8", "RPE 7-8. Control descent 2 sec."))
+
+        cursor.execute("""
+            INSERT INTO session_blocks (session_id, position, block_type, title)
+            VALUES (?, ?, ?, ?)
+        """, (s2, 2, "cardio", "Conditioning"))
+        b2_cardio = cursor.lastrowid
+
+        cursor.execute("""
+            INSERT INTO planned_exercises
+            (session_id, block_id, exercise_key, position, name, exercise_type,
+             target_duration_min, guidance_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (s2, b2_cardio, "cardio_1", 0, "Zone 2 Elliptical", "duration",
+              25, "Maintain HR 135-148. Reduce resistance if HR rises."))
+
+        # --- Yesterday's log (no plan for yesterday) ---
+        cursor.execute("""
+            INSERT INTO workout_session_logs
+            (session_id, date, pain_discomfort, general_notes, last_modified, modified_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (None, yesterday, "Minor knee tightness, resolved after warmup",
+              "Good energy, felt strong on squats", now, "test_seed"))
+        log_id = cursor.lastrowid
+
+        cursor.execute("""
+            INSERT INTO exercise_logs
+            (session_log_id, exercise_id, exercise_key, completed)
+            VALUES (?, ?, ?, ?)
+        """, (log_id, None, "warmup_1", 0))
+        warmup_log_id = cursor.lastrowid
+
+        for item in ["Cat-Cow x10", "Bird-Dog x5/side", "Dead Bug x10"]:
+            cursor.execute(
+                "INSERT INTO checklist_log_items (exercise_log_id, item_text) VALUES (?, ?)",
+                (warmup_log_id, item)
+            )
+
+        cursor.execute("""
+            INSERT INTO exercise_logs
+            (session_log_id, exercise_id, exercise_key, completed, user_note)
+            VALUES (?, ?, ?, ?, ?)
+        """, (log_id, None, "ex_1", 1, "Used 53lb KB, felt solid"))
+        ex1_log_id = cursor.lastrowid
+
+        for set_num, weight, reps, rpe, unit in [
+            (1, 53, 10, 6, "lbs"), (2, 53, 10, 7, "lbs"), (3, 53, 10, 7.5, "lbs"),
+        ]:
+            cursor.execute("""
+                INSERT INTO set_logs (exercise_log_id, set_num, weight, reps, rpe, unit)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (ex1_log_id, set_num, weight, reps, rpe, unit))
+
+        cursor.execute("""
+            INSERT INTO exercise_logs
+            (session_log_id, exercise_id, exercise_key, completed)
+            VALUES (?, ?, ?, ?)
+        """, (log_id, None, "ex_2", 1))
+        ex2_log_id = cursor.lastrowid
+
+        for set_num, weight, reps, rpe, unit in [
+            (1, 45, 10, 6, "lbs"), (2, 45, 10, 7, "lbs"), (3, 45, 10, 7, "lbs"),
+        ]:
+            cursor.execute("""
+                INSERT INTO set_logs (exercise_log_id, set_num, weight, reps, rpe, unit)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (ex2_log_id, set_num, weight, reps, rpe, unit))
+
+        cursor.execute("""
+            INSERT INTO exercise_logs
+            (session_log_id, exercise_id, exercise_key, completed,
+             duration_min, avg_hr, max_hr)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (log_id, None, "cardio_1", 1, 16, 142, 151))
 
         conn.commit()
 
     print(f"  Seeded test data:")
-    print(f"    - Today's plan ({today}): {today_plan['day_name']}")
-    print(f"    - Tomorrow's plan ({tomorrow}): {tomorrow_plan['day_name']}")
+    print(f"    - Today's plan ({today}): Test Day - Lower Body + Conditioning")
+    print(f"    - Tomorrow's plan ({tomorrow}): Test Day - Heavy Compound")
     print(f"    - Yesterday's log ({yesterday}): completed workout")
 
 

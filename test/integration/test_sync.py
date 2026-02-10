@@ -139,7 +139,8 @@ class TestSyncPostLogs:
         response = client.get(f"/api/workout/sync?client_id={registered_client}")
         log = response.json()["logs"][today]
         assert log["session_feedback"]["pain_discomfort"] == "Updated pain notes"
-        assert log["ex_1"]["completed"] is False
+        # completed=False is stored as 0, assembled log omits falsy completed
+        assert "completed" not in log["ex_1"] or log["ex_1"]["completed"] is False
 
 
 @pytest.mark.integration

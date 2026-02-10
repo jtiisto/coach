@@ -5,7 +5,6 @@ import { h } from 'preact';
 import htm from 'htm';
 
 import { BlockView } from './BlockView.js';
-import { ExerciseItem } from './ExerciseItem.js';
 import { SessionFeedback } from './SessionFeedback.js';
 import { getToday } from '../utils.js';
 
@@ -21,8 +20,7 @@ export function WorkoutView({ date, plan, log, isEditable = true }) {
         `;
     }
 
-    const blocks = plan.blocks || null;
-    const exercises = plan.exercises || [];
+    const blocks = plan.blocks || [];
 
     const today = getToday();
     const isFutureDate = date > today;
@@ -52,31 +50,17 @@ export function WorkoutView({ date, plan, log, isEditable = true }) {
                 </div>
             </div>
 
-            ${blocks ? html`
-                <div class="blocks-list">
-                    ${blocks.map(block => html`
-                        <${BlockView}
-                            key=${block.block_index}
-                            date=${date}
-                            block=${block}
-                            log=${log}
-                            isEditable=${isEditable}
-                        />
-                    `)}
-                </div>
-            ` : html`
-                <div class="exercises-list">
-                    ${exercises.map(exercise => html`
-                        <${ExerciseItem}
-                            key=${exercise.id}
-                            date=${date}
-                            exercise=${exercise}
-                            logData=${log?.[exercise.id]}
-                            isEditable=${isEditable}
-                        />
-                    `)}
-                </div>
-            `}
+            <div class="blocks-list">
+                ${blocks.map(block => html`
+                    <${BlockView}
+                        key=${block.block_index}
+                        date=${date}
+                        block=${block}
+                        log=${log}
+                        isEditable=${isEditable}
+                    />
+                `)}
+            </div>
 
             <${SessionFeedback}
                 date=${date}

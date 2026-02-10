@@ -111,12 +111,12 @@ class TestDatabaseManager:
         """Write connection should allow writes."""
         # Insert data
         db_manager.execute_write(
-            "INSERT INTO workout_plans (date, plan_json, last_modified) VALUES (?, ?, ?)",
-            ["2026-02-02", '{"test": true}', "2026-01-30T00:00:00Z"]
+            "INSERT INTO workout_sessions (date, day_name, last_modified) VALUES (?, ?, ?)",
+            ["2026-02-02", "Test", "2026-01-30T00:00:00Z"]
         )
 
         # Verify
-        result = db_manager.execute_query("SELECT date FROM workout_plans")
+        result = db_manager.execute_query("SELECT date FROM workout_sessions")
         assert len(result) == 1
         assert result[0]["date"] == "2026-02-02"
 
@@ -124,13 +124,13 @@ class TestDatabaseManager:
         """execute_query with read_only=False should commit changes."""
         # Insert using execute_query with read_only=False
         db_manager.execute_query(
-            "INSERT INTO workout_plans (date, plan_json, last_modified) VALUES (?, ?, ?)",
-            ["2026-03-01", '{"test": true}', "2026-01-30T00:00:00Z"],
+            "INSERT INTO workout_sessions (date, day_name, last_modified) VALUES (?, ?, ?)",
+            ["2026-03-01", "Test", "2026-01-30T00:00:00Z"],
             read_only=False
         )
 
         # Verify the insert was committed
-        result = db_manager.execute_query("SELECT date FROM workout_plans WHERE date = '2026-03-01'")
+        result = db_manager.execute_query("SELECT date FROM workout_sessions WHERE date = '2026-03-01'")
         assert len(result) == 1
 
     def test_execute_query_sql_error(self, mcp_config, db_manager):
@@ -142,6 +142,32 @@ class TestDatabaseManager:
         """execute_write should raise ValueError on SQL error."""
         with pytest.raises(ValueError, match="Database error"):
             db_manager.execute_write("INSERT INTO nonexistent_table (x) VALUES (?)", ["test"])
+
+    def test_transaction_context_manager(self, mcp_config, db_manager):
+        """Transaction should commit on success and rollback on failure."""
+        # Successful transaction
+        with db_manager.transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO workout_sessions (date, day_name, last_modified) VALUES (?, ?, ?)",
+                ["2026-04-01", "Transaction Test", "2026-01-30T00:00:00Z"]
+            )
+
+        result = db_manager.execute_query("SELECT date FROM workout_sessions WHERE date = '2026-04-01'")
+        assert len(result) == 1
+
+        # Failed transaction should rollback
+        try:
+            with db_manager.transaction() as cursor:
+                cursor.execute(
+                    "INSERT INTO workout_sessions (date, day_name, last_modified) VALUES (?, ?, ?)",
+                    ["2026-04-02", "Rollback Test", "2026-01-30T00:00:00Z"]
+                )
+                raise RuntimeError("Intentional error")
+        except RuntimeError:
+            pass
+
+        result = db_manager.execute_query("SELECT date FROM workout_sessions WHERE date = '2026-04-02'")
+        assert len(result) == 0
 
 
 @pytest.mark.integration
@@ -162,6 +188,7 @@ class TestSetWorkoutPlan:
         assert result["success"] is True
         assert result["date"] == "2026-02-02"
         assert result["plan"]["day_name"] == "Test Workout"
+        assert len(result["plan"]["blocks"]) == 3
 
     def test_update_existing_plan(self, mcp_config, sample_plan):
         """Should update an existing plan."""
@@ -180,16 +207,16 @@ class TestSetWorkoutPlan:
         assert result["success"] is True
         assert result["plan"]["day_name"] == "Updated Workout"
 
-    def test_plan_validation_missing_exercises(self, mcp_config):
-        """Should reject plan without exercises or blocks."""
+    def test_plan_validation_missing_blocks(self, mcp_config):
+        """Should reject plan without blocks."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        invalid_plan = {"day_name": "Test"}  # Missing exercises and blocks
+        invalid_plan = {"day_name": "Test"}  # Missing blocks
 
-        with pytest.raises(ValueError, match="must have either 'exercises' or 'blocks'"):
+        with pytest.raises(ValueError, match="must have 'blocks'"):
             tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
 
     def test_plan_validation_invalid_date(self, mcp_config, sample_plan):
@@ -202,23 +229,36 @@ class TestSetWorkoutPlan:
         with pytest.raises(ValueError, match="Invalid date format"):
             tools["set_workout_plan"].fn(date="02-02-2026", plan=sample_plan)
 
-    def test_plan_validation_exercise_missing_id(self, mcp_config):
-        """Should reject exercise without id."""
+    def test_plan_validation_exercise_missing_id_auto_transforms(self, mcp_config):
+        """Exercises without id/type trigger auto-transform which adds them."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        invalid_plan = {
+        # Exercises without id trigger transform pipeline which adds IDs
+        plan = {
             "day_name": "Test",
-            "exercises": [{"name": "Squat", "type": "strength"}]  # Missing id
+            "blocks": [
+                {
+                    "block_type": "strength",
+                    "title": "Strength",
+                    "exercises": [
+                        {"name": "Squat", "sets": 3, "reps": 5}  # Raw LLM format
+                    ]
+                }
+            ]
         }
 
-        with pytest.raises(ValueError, match="missing 'id' field"):
-            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+        result = tools["set_workout_plan"].fn(date="2026-02-02", plan=plan)
+        assert result["success"] is True
+        # Verify transform added id and type
+        ex = result["plan"]["blocks"][0]["exercises"][0]
+        assert "id" in ex
+        assert "type" in ex
 
     def test_plan_validation_invalid_exercise_type(self, mcp_config):
-        """Should reject invalid exercise type."""
+        """Should reject invalid exercise type on pre-transformed exercises."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -226,7 +266,15 @@ class TestSetWorkoutPlan:
 
         invalid_plan = {
             "day_name": "Test",
-            "exercises": [{"id": "ex_1", "name": "Squat", "type": "invalid_type"}]
+            "blocks": [
+                {
+                    "block_type": "strength",
+                    "title": "Strength",
+                    "exercises": [
+                        {"id": "ex_1", "name": "Squat", "type": "invalid_type"}
+                    ]
+                }
+            ]
         }
 
         with pytest.raises(ValueError, match="invalid type"):
@@ -242,8 +290,8 @@ class TestSetWorkoutPlan:
         with pytest.raises(ValueError, match="Plan must be a dictionary"):
             tools["set_workout_plan"].fn(date="2026-02-02", plan="not a dict")
 
-    def test_plan_validation_exercises_not_a_list(self, mcp_config):
-        """Should reject plan where exercises is not a list."""
+    def test_plan_validation_blocks_not_a_list(self, mcp_config):
+        """Should reject plan where blocks is not a list."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -251,10 +299,27 @@ class TestSetWorkoutPlan:
 
         invalid_plan = {
             "day_name": "Test",
-            "exercises": "not a list"
+            "blocks": "not a list"
         }
 
-        with pytest.raises(ValueError, match="exercises must be a list"):
+        with pytest.raises(ValueError, match="blocks must be a list"):
+            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+
+    def test_plan_validation_block_missing_type(self, mcp_config):
+        """Should reject block without block_type."""
+        from coach_mcp.server import create_mcp_server
+
+        mcp = create_mcp_server(mcp_config)
+        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
+
+        invalid_plan = {
+            "day_name": "Test",
+            "blocks": [
+                {"title": "Warmup", "exercises": [{"name": "Stretch"}]}
+            ]
+        }
+
+        with pytest.raises(ValueError, match="missing 'block_type' field"):
             tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
 
     def test_plan_validation_exercise_missing_name(self, mcp_config):
@@ -266,29 +331,48 @@ class TestSetWorkoutPlan:
 
         invalid_plan = {
             "day_name": "Test",
-            "exercises": [{"id": "ex_1", "type": "strength"}]  # Missing name
+            "blocks": [
+                {
+                    "block_type": "strength",
+                    "title": "Strength",
+                    "exercises": [
+                        {"id": "ex_1", "type": "strength"}  # Missing name
+                    ]
+                }
+            ]
         }
 
         with pytest.raises(ValueError, match="missing 'name' field"):
             tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
 
-    def test_plan_validation_exercise_missing_type(self, mcp_config):
-        """Should reject exercise without type."""
+    def test_plan_validation_exercise_missing_type_auto_transforms(self, mcp_config):
+        """Exercises without type trigger auto-transform which adds type."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        invalid_plan = {
+        # Exercise with id but no type triggers transform
+        plan = {
             "day_name": "Test",
-            "exercises": [{"id": "ex_1", "name": "Squat"}]  # Missing type
+            "blocks": [
+                {
+                    "block_type": "strength",
+                    "title": "Strength",
+                    "exercises": [
+                        {"name": "Squat", "sets": 3, "reps": 5}  # No id or type
+                    ]
+                }
+            ]
         }
 
-        with pytest.raises(ValueError, match="missing 'type' field"):
-            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+        result = tools["set_workout_plan"].fn(date="2026-02-02", plan=plan)
+        assert result["success"] is True
+        ex = result["plan"]["blocks"][0]["exercises"][0]
+        assert ex["type"] == "strength"
 
-    def test_create_plan_with_blocks(self, mcp_config):
-        """Should transform blocks into exercises and store both."""
+    def test_create_plan_with_raw_blocks(self, mcp_config):
+        """Should transform raw LLM blocks into exercises and store in relational tables."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -329,17 +413,18 @@ class TestSetWorkoutPlan:
 
         assert result["success"] is True
         saved_plan = result["plan"]
-        # Exercises list should be generated from blocks
-        assert "exercises" in saved_plan
-        assert len(saved_plan["exercises"]) > 0
         # Blocks should be preserved (transformed)
         assert "blocks" in saved_plan
         assert len(saved_plan["blocks"]) == 3
+        # Verify exercises exist within blocks
+        total_exercises = sum(len(b["exercises"]) for b in saved_plan["blocks"])
+        assert total_exercises > 0
         # Verify exercises have required fields
-        for ex in saved_plan["exercises"]:
-            assert "id" in ex
-            assert "name" in ex
-            assert "type" in ex
+        for block in saved_plan["blocks"]:
+            for ex in block["exercises"]:
+                assert "id" in ex
+                assert "name" in ex
+                assert "type" in ex
 
         # Verify we can retrieve the stored plan
         get_result = tools["get_workout_plan"].fn(
@@ -347,8 +432,8 @@ class TestSetWorkoutPlan:
         )
         assert len(get_result) == 1
 
-    def test_create_plan_with_blocks_and_exercises(self, mcp_config):
-        """Should store as-is when both blocks and exercises are provided."""
+    def test_create_plan_with_pretransformed_blocks(self, mcp_config):
+        """Should store pre-transformed block plan directly."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -366,10 +451,6 @@ class TestSetWorkoutPlan:
                          "target_sets": 3, "target_reps": "8"}
                     ]
                 }
-            ],
-            "exercises": [
-                {"id": "strength_0_1", "name": "Squat", "type": "strength",
-                 "target_sets": 3, "target_reps": "8"}
             ]
         }
 
@@ -377,53 +458,8 @@ class TestSetWorkoutPlan:
 
         assert result["success"] is True
         saved_plan = result["plan"]
-        # Should be stored as-is, no transform
-        assert saved_plan["exercises"] == plan["exercises"]
-        assert saved_plan["blocks"] == plan["blocks"]
-
-    def test_plan_validation_no_exercises_no_blocks(self, mcp_config):
-        """Should reject plan with neither exercises nor blocks."""
-        from coach_mcp.server import create_mcp_server
-
-        mcp = create_mcp_server(mcp_config)
-        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
-
-        invalid_plan = {"day_name": "Test", "location": "Gym"}
-
-        with pytest.raises(ValueError, match="must have either 'exercises' or 'blocks'"):
-            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
-
-    def test_plan_validation_blocks_not_a_list(self, mcp_config):
-        """Should reject plan where blocks is not a list."""
-        from coach_mcp.server import create_mcp_server
-
-        mcp = create_mcp_server(mcp_config)
-        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
-
-        invalid_plan = {
-            "day_name": "Test",
-            "blocks": "not a list"
-        }
-
-        with pytest.raises(ValueError, match="blocks must be a list"):
-            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
-
-    def test_plan_validation_block_missing_type(self, mcp_config):
-        """Should reject block without block_type."""
-        from coach_mcp.server import create_mcp_server
-
-        mcp = create_mcp_server(mcp_config)
-        tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
-
-        invalid_plan = {
-            "day_name": "Test",
-            "blocks": [
-                {"title": "Warmup", "exercises": [{"name": "Stretch"}]}
-            ]
-        }
-
-        with pytest.raises(ValueError, match="missing 'block_type' field"):
-            tools["set_workout_plan"].fn(date="2026-02-02", plan=invalid_plan)
+        assert len(saved_plan["blocks"]) == 1
+        assert saved_plan["blocks"][0]["exercises"][0]["name"] == "Squat"
 
 
 @pytest.mark.integration
@@ -503,20 +539,28 @@ class TestGetWorkoutLogs:
 
         assert result == []
 
-    def test_get_logs_with_data(self, mcp_config, sample_log):
+    def test_get_logs_with_data(self, mcp_config, db_manager):
         """Should return logs within date range."""
-        from coach_mcp.server import create_mcp_server, DatabaseManager
+        from coach_mcp.server import create_mcp_server
 
-        db_manager = DatabaseManager(mcp_config)
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        # Insert log directly
+        # Insert log directly into relational tables
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        db_manager.execute_write(
-            "INSERT INTO workout_logs (date, log_json, last_modified) VALUES (?, ?, ?)",
-            ["2026-02-02", json.dumps(sample_log), now]
-        )
+        with db_manager.transaction() as cursor:
+            cursor.execute("""
+                INSERT INTO workout_session_logs
+                (date, pain_discomfort, general_notes, last_modified)
+                VALUES (?, ?, ?, ?)
+            """, ["2026-02-02", "None", "Good session", now])
+            log_id = cursor.lastrowid
+
+            cursor.execute("""
+                INSERT INTO exercise_logs
+                (session_log_id, exercise_key, completed)
+                VALUES (?, ?, ?)
+            """, [log_id, "ex_1", 1])
 
         result = tools["get_workout_logs"].fn(
             start_date="2026-02-01",
@@ -553,26 +597,26 @@ class TestGetWorkoutSummary:
         with pytest.raises(ValueError, match="Days cannot exceed 365"):
             tools["get_workout_summary"].fn(days=400)
 
-    def test_summary_with_data(self, mcp_config, sample_plan, sample_log):
+    def test_summary_with_data(self, mcp_config, sample_plan, db_manager):
         """Should return accurate summary with data."""
-        from coach_mcp.server import create_mcp_server, DatabaseManager
+        from coach_mcp.server import create_mcp_server
 
-        db_manager = DatabaseManager(mcp_config)
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
         today = datetime.now().strftime("%Y-%m-%d")
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        # Insert plan and log
-        db_manager.execute_write(
-            "INSERT INTO workout_plans (date, plan_json, last_modified) VALUES (?, ?, ?)",
-            [today, json.dumps(sample_plan), now]
-        )
-        db_manager.execute_write(
-            "INSERT INTO workout_logs (date, log_json, last_modified) VALUES (?, ?, ?)",
-            [today, json.dumps(sample_log), now]
-        )
+        # Insert plan via MCP tool
+        tools["set_workout_plan"].fn(date=today, plan=sample_plan)
+
+        # Insert log directly
+        with db_manager.transaction() as cursor:
+            cursor.execute("""
+                INSERT INTO workout_session_logs
+                (date, pain_discomfort, general_notes, last_modified)
+                VALUES (?, ?, ?, ?)
+            """, [today, "None", "Good session", now])
 
         result = tools["get_workout_summary"].fn(days=30)
 
@@ -650,16 +694,30 @@ class TestIngestTrainingProgram:
                 "day_name": "Monday Workout",
                 "location": "Home",
                 "phase": "Foundation",
-                "exercises": [
-                    {"id": "ex_1", "name": "Squat", "type": "strength", "target_sets": 3, "target_reps": "10"}
+                "blocks": [
+                    {
+                        "block_type": "strength",
+                        "title": "Strength",
+                        "exercises": [
+                            {"id": "ex_1", "name": "Squat", "type": "strength",
+                             "target_sets": 3, "target_reps": "10"}
+                        ]
+                    }
                 ]
             },
             "2026-02-04": {
                 "day_name": "Wednesday Workout",
                 "location": "Gym",
                 "phase": "Foundation",
-                "exercises": [
-                    {"id": "ex_1", "name": "Deadlift", "type": "strength", "target_sets": 4, "target_reps": "5"}
+                "blocks": [
+                    {
+                        "block_type": "strength",
+                        "title": "Strength",
+                        "exercises": [
+                            {"id": "ex_1", "name": "Deadlift", "type": "strength",
+                             "target_sets": 4, "target_reps": "5"}
+                        ]
+                    }
                 ]
             }
         }
@@ -672,7 +730,7 @@ class TestIngestTrainingProgram:
         assert "2026-02-04" in result["success_dates"]
 
     def test_ingest_with_block_transform(self, mcp_config):
-        """Should transform block-based format to flat exercises."""
+        """Should transform block-based format when ingesting."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -711,7 +769,8 @@ class TestIngestTrainingProgram:
         assert len(fetched) == 1
         plan = fetched[0]["plan"]
         assert plan["day_name"] == "Lower Body + Bike"
-        assert len(plan["exercises"]) == 2
+        total_exercises = sum(len(b["exercises"]) for b in plan["blocks"])
+        assert total_exercises == 2
 
     def test_ingest_partial_failure(self, mcp_config):
         """Should report partial failures."""
@@ -723,11 +782,27 @@ class TestIngestTrainingProgram:
         plans = {
             "2026-02-02": {
                 "day_name": "Valid Plan",
-                "exercises": [{"id": "ex_1", "name": "Squat", "type": "strength"}]
+                "blocks": [
+                    {
+                        "block_type": "strength",
+                        "title": "Strength",
+                        "exercises": [
+                            {"id": "ex_1", "name": "Squat", "type": "strength"}
+                        ]
+                    }
+                ]
             },
             "invalid-date": {
                 "day_name": "Invalid Date Plan",
-                "exercises": [{"id": "ex_1", "name": "Squat", "type": "strength"}]
+                "blocks": [
+                    {
+                        "block_type": "strength",
+                        "title": "Strength",
+                        "exercises": [
+                            {"id": "ex_1", "name": "Squat", "type": "strength"}
+                        ]
+                    }
+                ]
             }
         }
 
@@ -747,7 +822,15 @@ class TestIngestTrainingProgram:
         plans = {
             "2026-02-02": {
                 "theme": "Upper Body Focus",
-                "exercises": [{"id": "ex_1", "name": "Squat", "type": "strength"}]
+                "blocks": [
+                    {
+                        "block_type": "strength",
+                        "title": "Strength",
+                        "exercises": [
+                            {"id": "ex_1", "name": "Squat", "type": "strength"}
+                        ]
+                    }
+                ]
             }
         }
 
@@ -757,8 +840,8 @@ class TestIngestTrainingProgram:
         fetched = tools["get_workout_plan"].fn(start_date="2026-02-02", end_date="2026-02-02")
         assert fetched[0]["plan"]["day_name"] == "Upper Body Focus"
 
-    def test_ingest_empty_exercises_fails(self, mcp_config):
-        """Should fail when plan has no exercises."""
+    def test_ingest_empty_blocks_fails(self, mcp_config):
+        """Should fail when plan has no exercises in blocks."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -767,7 +850,13 @@ class TestIngestTrainingProgram:
         plans = {
             "2026-02-02": {
                 "day_name": "Empty Plan",
-                "exercises": []
+                "blocks": [
+                    {
+                        "block_type": "strength",
+                        "title": "Empty Block",
+                        "exercises": []
+                    }
+                ]
             }
         }
 
@@ -823,7 +912,7 @@ class TestUpdateExercise:
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        with pytest.raises(ValueError, match="No plan found"):
+        with pytest.raises(ValueError, match="not found"):
             tools["update_exercise"].fn(
                 date="2026-02-02",
                 exercise_id="ex_1",
@@ -833,15 +922,15 @@ class TestUpdateExercise:
 
 @pytest.mark.integration
 class TestAddExercise:
-    def test_add_exercise_to_end(self, mcp_config, sample_plan):
-        """Should add exercise to end of list."""
+    def test_add_exercise_to_block(self, mcp_config, sample_plan):
+        """Should add exercise to a block."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
         tools["set_workout_plan"].fn(date="2026-02-02", plan=sample_plan)
-        original_count = len(sample_plan["exercises"])
+        # sample_plan has 3 exercises total (1 per block)
 
         result = tools["add_exercise"].fn(
             date="2026-02-02",
@@ -850,14 +939,15 @@ class TestAddExercise:
                 "name": "Plank",
                 "type": "duration",
                 "target_duration_min": 1
-            }
+            },
+            block_position=1  # Add to strength block
         )
 
         assert result["success"] is True
-        assert result["total_exercises"] == original_count + 1
+        assert result["total_exercises"] == 4  # 3 original + 1 new
 
     def test_add_exercise_at_position(self, mcp_config, sample_plan):
-        """Should add exercise at specified position."""
+        """Should add exercise at specified position within a block."""
         from coach_mcp.server import create_mcp_server
 
         mcp = create_mcp_server(mcp_config)
@@ -868,13 +958,14 @@ class TestAddExercise:
         tools["add_exercise"].fn(
             date="2026-02-02",
             exercise={"id": "ex_inserted", "name": "Inserted", "type": "strength"},
-            position=1
+            block_position=1,  # strength block
+            position=0  # Insert at beginning of block
         )
 
-        # Verify position
+        # Verify position within the strength block
         fetched = tools["get_workout_plan"].fn(start_date="2026-02-02", end_date="2026-02-02")
-        exercises = fetched[0]["plan"]["exercises"]
-        assert exercises[1]["id"] == "ex_inserted"
+        strength_block = fetched[0]["plan"]["blocks"][1]
+        assert strength_block["exercises"][0]["id"] == "ex_inserted"
 
     def test_add_exercise_duplicate_id(self, mcp_config, sample_plan):
         """Should reject duplicate exercise ID."""
@@ -888,7 +979,8 @@ class TestAddExercise:
         with pytest.raises(ValueError, match="already exists"):
             tools["add_exercise"].fn(
                 date="2026-02-02",
-                exercise={"id": "ex_1", "name": "Duplicate", "type": "strength"}
+                exercise={"id": "ex_1", "name": "Duplicate", "type": "strength"},
+                block_position=1
             )
 
     def test_add_exercise_invalid_type(self, mcp_config, sample_plan):
@@ -903,7 +995,8 @@ class TestAddExercise:
         with pytest.raises(ValueError, match="Invalid exercise type"):
             tools["add_exercise"].fn(
                 date="2026-02-02",
-                exercise={"id": "ex_new", "name": "Invalid", "type": "invalid_type"}
+                exercise={"id": "ex_new", "name": "Invalid", "type": "invalid_type"},
+                block_position=1
             )
 
     def test_add_exercise_no_plan(self, mcp_config):
@@ -916,7 +1009,8 @@ class TestAddExercise:
         with pytest.raises(ValueError, match="No plan found"):
             tools["add_exercise"].fn(
                 date="2026-02-02",
-                exercise={"id": "ex_new", "name": "Plank", "type": "duration"}
+                exercise={"id": "ex_new", "name": "Plank", "type": "duration"},
+                block_position=0
             )
 
     def test_add_exercise_missing_required_field(self, mcp_config, sample_plan):
@@ -931,7 +1025,8 @@ class TestAddExercise:
         with pytest.raises(ValueError, match="missing required field"):
             tools["add_exercise"].fn(
                 date="2026-02-02",
-                exercise={"name": "Plank", "type": "duration"}  # Missing id
+                exercise={"name": "Plank", "type": "duration"},  # Missing id
+                block_position=1
             )
 
 
@@ -945,12 +1040,11 @@ class TestRemoveExercise:
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
         tools["set_workout_plan"].fn(date="2026-02-02", plan=sample_plan)
-        original_count = len(sample_plan["exercises"])
 
         result = tools["remove_exercise"].fn(date="2026-02-02", exercise_id="ex_1")
 
         assert result["success"] is True
-        assert result["remaining_exercises"] == original_count - 1
+        assert result["remaining_exercises"] == 2  # 3 original - 1 removed
 
     def test_remove_nonexistent_exercise(self, mcp_config, sample_plan):
         """Should fail when exercise not found."""
@@ -971,7 +1065,7 @@ class TestRemoveExercise:
         mcp = create_mcp_server(mcp_config)
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
-        with pytest.raises(ValueError, match="No plan found"):
+        with pytest.raises(ValueError, match="not found"):
             tools["remove_exercise"].fn(date="2026-02-02", exercise_id="ex_1")
 
 
@@ -1014,7 +1108,7 @@ class TestUpdatePlanMetadata:
         tools = {tool.name: tool for tool in mcp._tool_manager._tools.values()}
 
         tools["set_workout_plan"].fn(date="2026-02-02", plan=sample_plan)
-        original_exercise_count = len(sample_plan["exercises"])
+        # sample_plan has 3 exercises (1 per block)
 
         result = tools["update_plan_metadata"].fn(
             date="2026-02-02",
@@ -1025,7 +1119,7 @@ class TestUpdatePlanMetadata:
         assert result["plan_metadata"]["day_name"] == "Updated Name"
         assert result["plan_metadata"]["phase"] == "Building"
         assert result["plan_metadata"]["location"] == "Gym"
-        assert result["plan_metadata"]["exercise_count"] == original_exercise_count
+        assert result["plan_metadata"]["exercise_count"] == 3
 
     def test_update_metadata_no_plan(self, mcp_config):
         """Should fail when plan doesn't exist."""
@@ -1060,29 +1154,11 @@ class TestUpdatePlanMetadata:
 class TestMCPServerCreation:
     def test_create_server_from_env_var(self, temp_db_path, monkeypatch):
         """Should create server using COACH_DB_PATH env var."""
-        import sqlite3
+        import server as server_module
         from coach_mcp.server import create_mcp_server
 
-        # Create database with required tables
-        conn = sqlite3.connect(temp_db_path)
-        conn.execute("""
-            CREATE TABLE workout_plans (
-                date TEXT PRIMARY KEY,
-                plan_json TEXT NOT NULL,
-                last_modified TEXT NOT NULL,
-                last_modified_by TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE workout_logs (
-                date TEXT PRIMARY KEY,
-                log_json TEXT NOT NULL,
-                last_modified TEXT NOT NULL,
-                last_modified_by TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
+        # Create database with new schema
+        server_module.init_database(db_path=temp_db_path)
 
         # Set environment variable
         monkeypatch.setenv("COACH_DB_PATH", str(temp_db_path))

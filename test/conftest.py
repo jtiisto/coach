@@ -63,32 +63,51 @@ def client(test_app):
 
 @pytest.fixture
 def sample_plan():
-    """Sample workout plan for testing."""
+    """Sample workout plan for testing (block-based format)."""
     return {
         "day_name": "Test Workout",
         "location": "Home",
         "phase": "Foundation",
-        "exercises": [
+        "blocks": [
             {
-                "id": "warmup_1",
-                "name": "Stability Start",
-                "type": "checklist",
-                "items": ["Cat-Cow x10", "Bird-Dog x5/side"]
+                "block_type": "warmup",
+                "title": "Warmup",
+                "exercises": [
+                    {
+                        "id": "warmup_0",
+                        "name": "Stability Start",
+                        "type": "checklist",
+                        "items": ["Cat-Cow x10", "Bird-Dog x5/side"]
+                    }
+                ]
             },
             {
-                "id": "ex_1",
-                "name": "KB Goblet Squat",
-                "type": "strength",
-                "target_sets": 3,
-                "target_reps": "10",
-                "guidance_note": "Tempo 3-1-1"
+                "block_type": "strength",
+                "title": "Strength",
+                "rest_guidance": "Rest 2 min",
+                "exercises": [
+                    {
+                        "id": "ex_1",
+                        "name": "KB Goblet Squat",
+                        "type": "strength",
+                        "target_sets": 3,
+                        "target_reps": "10",
+                        "guidance_note": "Tempo 3-1-1"
+                    }
+                ]
             },
             {
-                "id": "cardio_1",
-                "name": "Zone 2 Bike",
-                "type": "duration",
-                "target_duration_min": 15,
-                "guidance_note": "HR 135-148"
+                "block_type": "cardio",
+                "title": "Conditioning",
+                "exercises": [
+                    {
+                        "id": "cardio_1",
+                        "name": "Zone 2 Bike",
+                        "type": "duration",
+                        "target_duration_min": 15,
+                        "guidance_note": "HR 135-148"
+                    }
+                ]
             }
         ]
     }
@@ -102,7 +121,7 @@ def sample_log():
             "pain_discomfort": "None",
             "general_notes": "Good session"
         },
-        "warmup_1": {
+        "warmup_0": {
             "completed_items": ["Cat-Cow x10", "Bird-Dog x5/side"]
         },
         "ex_1": {
@@ -137,23 +156,93 @@ def seeded_database(client, registered_client, sample_plan, sample_log, temp_db_
     """Database seeded with sample plan and log data for testing."""
     import sqlite3
 
-    # Insert plan directly into database (simulating MCP)
     today = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(temp_db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
 
-    # Insert plans
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    cursor.execute(
-        "INSERT INTO workout_plans (date, plan_json, last_modified, last_modified_by) VALUES (?, ?, ?, ?)",
-        (today, json.dumps(sample_plan), now, "test")
-    )
-    cursor.execute(
-        "INSERT INTO workout_plans (date, plan_json, last_modified, last_modified_by) VALUES (?, ?, ?, ?)",
-        (yesterday, json.dumps({**sample_plan, "day_name": "Yesterday's Workout"}), now, "test")
-    )
+
+    # Insert today's plan into relational tables
+    cursor.execute("""
+        INSERT INTO workout_sessions
+        (date, day_name, location, phase, last_modified, modified_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (today, "Test Workout", "Home", "Foundation", now, "test"))
+    s1 = cursor.lastrowid
+
+    # Warmup block
+    cursor.execute("""
+        INSERT INTO session_blocks (session_id, position, block_type, title)
+        VALUES (?, ?, ?, ?)
+    """, (s1, 0, "warmup", "Warmup"))
+    b1 = cursor.lastrowid
+
+    cursor.execute("""
+        INSERT INTO planned_exercises
+        (session_id, block_id, exercise_key, position, name, exercise_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (s1, b1, "warmup_0", 0, "Stability Start", "checklist"))
+    e_warmup = cursor.lastrowid
+
+    for i, item in enumerate(["Cat-Cow x10", "Bird-Dog x5/side"]):
+        cursor.execute(
+            "INSERT INTO checklist_items (exercise_id, position, item_text) VALUES (?, ?, ?)",
+            (e_warmup, i, item)
+        )
+
+    # Strength block
+    cursor.execute("""
+        INSERT INTO session_blocks (session_id, position, block_type, title, rest_guidance)
+        VALUES (?, ?, ?, ?, ?)
+    """, (s1, 1, "strength", "Strength", "Rest 2 min"))
+    b2 = cursor.lastrowid
+
+    cursor.execute("""
+        INSERT INTO planned_exercises
+        (session_id, block_id, exercise_key, position, name, exercise_type,
+         target_sets, target_reps, guidance_note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (s1, b2, "ex_1", 0, "KB Goblet Squat", "strength", 3, "10", "Tempo 3-1-1"))
+
+    # Cardio block
+    cursor.execute("""
+        INSERT INTO session_blocks (session_id, position, block_type, title)
+        VALUES (?, ?, ?, ?)
+    """, (s1, 2, "cardio", "Conditioning"))
+    b3 = cursor.lastrowid
+
+    cursor.execute("""
+        INSERT INTO planned_exercises
+        (session_id, block_id, exercise_key, position, name, exercise_type,
+         target_duration_min, guidance_note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (s1, b3, "cardio_1", 0, "Zone 2 Bike", "duration", 15, "HR 135-148"))
+
+    # Yesterday's plan
+    cursor.execute("""
+        INSERT INTO workout_sessions
+        (date, day_name, location, phase, last_modified, modified_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (yesterday, "Yesterday's Workout", "Home", "Foundation", now, "test"))
+    s2 = cursor.lastrowid
+
+    cursor.execute("""
+        INSERT INTO session_blocks (session_id, position, block_type, title)
+        VALUES (?, ?, ?, ?)
+    """, (s2, 0, "strength", "Strength"))
+    b_y = cursor.lastrowid
+
+    cursor.execute("""
+        INSERT INTO planned_exercises
+        (session_id, block_id, exercise_key, position, name, exercise_type,
+         target_sets, target_reps)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (s2, b_y, "ex_1", 0, "Squat", "strength", 3, "10"))
+
     conn.commit()
     conn.close()
 
@@ -180,32 +269,10 @@ def seeded_database(client, registered_client, sample_plan, sample_log, temp_db_
 def mcp_config(temp_db_path):
     """Create MCP config for testing."""
     from coach_mcp.config import MCPConfig
-
-    # Initialize the database first
     import server
-    import sqlite3
 
-    conn = sqlite3.connect(temp_db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS workout_plans (
-            date TEXT PRIMARY KEY,
-            plan_json TEXT NOT NULL,
-            last_modified TEXT NOT NULL,
-            last_modified_by TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS workout_logs (
-            date TEXT PRIMARY KEY,
-            log_json TEXT NOT NULL,
-            last_modified TEXT NOT NULL,
-            last_modified_by TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    # Use init_database to create all tables with new schema
+    server.init_database(db_path=temp_db_path)
 
     return MCPConfig(db_path=temp_db_path, max_rows=100)
 

@@ -43,16 +43,18 @@ class TestSyncGetWithData:
         data = response.json()
         assert len(data["logs"]) >= 1
 
-    def test_plan_includes_exercises(self, client, seeded_database):
-        """Returned plans should include exercise data."""
+    def test_plan_includes_blocks_with_exercises(self, client, seeded_database):
+        """Returned plans should include blocks with exercise data."""
         response = client.get(f"/api/workout/sync?client_id={seeded_database['client_id']}")
         plans = response.json()["plans"]
 
         today = datetime.now().strftime("%Y-%m-%d")
         plan = plans.get(today)
         assert plan is not None
-        assert "exercises" in plan
-        assert len(plan["exercises"]) == 3
+        assert "blocks" in plan
+        assert len(plan["blocks"]) == 3
+        total_exercises = sum(len(b["exercises"]) for b in plan["blocks"])
+        assert total_exercises == 3
 
     def test_plan_includes_metadata(self, client, seeded_database):
         """Plans should include day_name, location, phase."""
