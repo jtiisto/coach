@@ -673,6 +673,53 @@ def serve_js(file_path: str):
     raise HTTPException(status_code=404, detail=f"JS file not found: {file_path}")
 
 
+@app.get("/manifest.json")
+def serve_manifest():
+    """Serve the PWA manifest."""
+    manifest_path = PUBLIC_DIR / "manifest.json"
+    if manifest_path.exists():
+        return FileResponse(
+            manifest_path,
+            media_type="application/manifest+json",
+            headers={"Cache-Control": "no-cache, must-revalidate"}
+        )
+    raise HTTPException(status_code=404, detail="manifest.json not found")
+
+
+@app.get("/sw.js")
+def serve_service_worker():
+    """Serve the service worker from root scope."""
+    sw_path = PUBLIC_DIR / "sw.js"
+    if sw_path.exists():
+        return FileResponse(
+            sw_path,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache, must-revalidate",
+                "Service-Worker-Allowed": "/"
+            }
+        )
+    raise HTTPException(status_code=404, detail="sw.js not found")
+
+
+@app.get("/icons/{file_path:path}")
+def serve_icons(file_path: str):
+    """Serve icon files with long cache headers."""
+    icon_path = PUBLIC_DIR / "icons" / file_path
+    if icon_path.exists() and icon_path.is_file():
+        media_type = "image/png"
+        if file_path.endswith(".svg"):
+            media_type = "image/svg+xml"
+        elif file_path.endswith(".ico"):
+            media_type = "image/x-icon"
+        return FileResponse(
+            icon_path,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"}
+        )
+    raise HTTPException(status_code=404, detail=f"Icon not found: {file_path}")
+
+
 def seed_test_data():
     """Seed the test database with sample workout data for today."""
     today = datetime.now().strftime("%Y-%m-%d")

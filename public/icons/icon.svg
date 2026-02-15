@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="256" fill="#1a1a2e"/>
+  <!-- Dumbbell -->
+  <g fill="#e94560">
+    <!-- Center bar -->
+    <rect x="136" y="240" width="240" height="32" rx="8"/>
+    <!-- Left weight - outer plate -->
+    <rect x="88" y="176" width="48" height="160" rx="12"/>
+    <!-- Left weight - inner plate -->
+    <rect x="120" y="200" width="40" height="112" rx="8"/>
+    <!-- Right weight - inner plate -->
+    <rect x="352" y="200" width="40" height="112" rx="8"/>
+    <!-- Right weight - outer plate -->
+    <rect x="376" y="176" width="48" height="160" rx="12"/>
+  </g>
+</svg>
