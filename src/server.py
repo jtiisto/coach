@@ -762,25 +762,27 @@ def seed_test_data():
                 (e_warmup, i, item)
             )
 
-        # Strength block
+        # Strength block - antagonist pairs with long title + rest guidance
         cursor.execute("""
             INSERT INTO session_blocks
             (session_id, position, block_type, title, rest_guidance)
             VALUES (?, ?, ?, ?, ?)
-        """, (s1, 1, "strength", "Strength Block", "Rest until HR <= 130"))
+        """, (s1, 1, "strength",
+              "Upper Body Strength (Antagonist Pairs)",
+              "60-90 sec after completing each pair. Fallback: if avg HR exceeds 145, switch to straight sets with 90-120 sec rest."))
         b1_strength = cursor.lastrowid
 
         for key, pos, name, sets, reps, note, hide in [
-            ("ex_1", 0, "KB Goblet Squat", 3, "10",
-             "Tempo 3-1-1. Parallel depth, heels down. Rest until HR <= 130.", 0),
-            ("ex_2", 1, "DB Romanian Deadlift", 3, "10",
-             "Tempo 3-1-1. Feel hamstring stretch.", 0),
-            ("ex_3", 2, "DB Reverse Lunge", 3, "8/leg",
-             "Tempo 2-1-1. Step back, knee hovers.", 0),
-            ("ex_4", 3, "Single-Leg Glute Bridge", 3, "10/leg",
+            ("ex_1", 0, "Push-ups (Pair A)", 3, "To 2 shy of failure",
+             "Full ROM, control descent.", 1),
+            ("ex_2", 1, "Band Pull-Aparts (Pair A)", 3, "20",
+             "Squeeze shoulder blades together.", 1),
+            ("ex_3", 2, "DB Floor Press (Pair B)", 3, "8-10",
+             "Pause at bottom 1 sec.", 0),
+            ("ex_4", 3, "DB Bent-Over Row (Pair B)", 3, "10/side",
+             "Pull to hip, squeeze at top.", 0),
+            ("ex_5", 4, "Single-Leg Glute Bridge [Light]", 2, "12/leg",
              "Tempo 2-2-1. Squeeze at top 2 sec.", 1),
-            ("ex_5", 4, "DB Single-Arm Row", 3, "10/side",
-             "Tempo 2-1-1. Pull to hip, squeeze.", 0),
         ]:
             cursor.execute("""
                 INSERT INTO planned_exercises
@@ -789,11 +791,32 @@ def seed_test_data():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (s1, b1_strength, key, pos, name, "strength", sets, reps, note, hide))
 
+        # Power block
+        cursor.execute("""
+            INSERT INTO session_blocks
+            (session_id, position, block_type, title, rest_guidance)
+            VALUES (?, ?, ?, ?, ?)
+        """, (s1, 2, "strength", "Power Block", "90 sec between sets"))
+        b1_power = cursor.lastrowid
+
+        for key, pos, name, sets, reps, note, hide in [
+            ("pw_1", 0, "KB Swings", 3, "15",
+             "Powerful hip snap.", 0),
+            ("pw_2", 1, "Farmer's Carry", 2, "45 sec",
+             "Heavy, tight core.", 0),
+        ]:
+            cursor.execute("""
+                INSERT INTO planned_exercises
+                (session_id, block_id, exercise_key, position, name, exercise_type,
+                 target_sets, target_reps, guidance_note, hide_weight)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (s1, b1_power, key, pos, name, "strength", sets, reps, note, hide))
+
         # Cardio block
         cursor.execute("""
             INSERT INTO session_blocks (session_id, position, block_type, title)
             VALUES (?, ?, ?, ?)
-        """, (s1, 2, "cardio", "Conditioning"))
+        """, (s1, 3, "cardio", "Conditioning"))
         b1_cardio = cursor.lastrowid
 
         cursor.execute("""

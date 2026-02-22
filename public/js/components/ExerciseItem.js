@@ -13,6 +13,15 @@ import { ChecklistEntry } from './ChecklistEntry.js';
 
 const html = htm.bind(h);
 
+function parseName(name) {
+    const pills = [];
+    const base = name.replace(/\s*[\(\[](.*?)[\)\]]/g, (_, inner) => {
+        pills.push(inner);
+        return '';
+    }).trim();
+    return { base, pills };
+}
+
 export function ExerciseItem({ date, exercise, logData, isEditable = true }) {
     const [expanded, setExpanded] = useState(false);
 
@@ -91,7 +100,10 @@ export function ExerciseItem({ date, exercise, logData, isEditable = true }) {
                         disabled=${!isEditable}
                     />
                 </div>
-                <span class="exercise-name">${exercise.name}</span>
+                <span class="exercise-name">${parseName(exercise.name).base}</span>
+                ${parseName(exercise.name).pills.map(p => html`
+                    <span class="exercise-pill">${p}</span>
+                `)}
                 <span class="exercise-target">${target}</span>
                 <span class="exercise-chevron">${expanded ? '▲' : '▼'}</span>
             </div>
